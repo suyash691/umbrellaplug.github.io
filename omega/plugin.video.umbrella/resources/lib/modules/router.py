@@ -765,6 +765,17 @@ def router(argv2):
 			from resources.lib.debrid import offcloud
 			offcloud.Offcloud().user_cloud_clear()
 
+	elif action and action.startswith('db_'):
+		if action == 'db_Authorize':
+			from resources.lib.debrid.deepbrid import Deepbrid
+			Deepbrid().auth()
+		elif action == 'db_Revoke':
+			from resources.lib.debrid.deepbrid import Deepbrid
+			Deepbrid().remove_auth()
+		elif action == 'db_AccountInfo':
+			from resources.lib.debrid.deepbrid import Deepbrid
+			Deepbrid().account_info_to_dialog()
+
 
 	####################################################
 	#---Anime
