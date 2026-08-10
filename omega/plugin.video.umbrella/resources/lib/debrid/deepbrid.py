@@ -11,7 +11,6 @@ import requests
 
 from resources.lib.modules import control
 from resources.lib.modules import log_utils
-from resources.lib.modules import cache
 
 
 BASE_URL = 'https://www.deepbrid.com/api/v1/'
@@ -58,16 +57,17 @@ class Deepbrid:
             self.session.headers['X-Api-Key'] = self.api_key
 
     def _request(self, method, endpoint, params=None, data=None,
-                 json_data=None, files=None, silent=False):
+                 json_data=None, files=None, silent=False, timeout=None):
 
         url = BASE_URL + endpoint.lstrip('/')
+        request_timeout = self.timeout if timeout is None else timeout
 
         try:
             if method.upper() == 'GET':
                 response = self.session.get(
                     url,
                     params=params,
-                    timeout=self.timeout
+                    timeout=request_timeout
                 )
             else:
                 response = self.session.post(
@@ -76,7 +76,7 @@ class Deepbrid:
                     data=data,
                     json=json_data,
                     files=files,
-                    timeout=self.timeout
+                    timeout=request_timeout
                 )
 
             if response.status_code == 401:
@@ -113,12 +113,13 @@ class Deepbrid:
                 )
             return {}
 
-    def _get(self, endpoint, params=None, silent=False):
+    def _get(self, endpoint, params=None, silent=False, timeout=None):
         return self._request(
             'GET',
             endpoint,
             params=params,
-            silent=silent
+            silent=silent,
+            timeout=timeout
         )
 
     def _post(self, endpoint, data=None, json_data=None,
@@ -141,7 +142,7 @@ class Deepbrid:
 
         key = control.dialog.input(
             'Deepbrid API Key',
-            type=control.dialog.INPUT_ALPHANUM
+            type=control.alpha_input
         )
 
         if not key:
@@ -267,9 +268,7 @@ class Deepbrid:
             #   {"turbobit.net": "up"}
             # ]
 
-            result = cache.get(
-                self._get,
-                48,
+            result = self._get(
                 'hosts',
                 silent=True
             )
@@ -322,10 +321,7 @@ class Deepbrid:
             if not host:
                 return False
 
-            hosts = cache.get(
-                self.get_hosts,
-                48
-            )
+            hosts = self.get_hosts()
 
             if isinstance(hosts, dict):
                 host_list = hosts.get(
@@ -398,14 +394,15 @@ class Deepbrid:
 
         return torrent_id
 
-    def torrent_info(self, request_id=''):
+    def torrent_info(self, request_id='', timeout=None):
         if request_id:
             return self._get(
                 'torrents/info',
-                params={'id': request_id}
+                params={'id': request_id},
+                timeout=timeout
             )
 
-        return self._get('torrents/info')
+        return self._get('torrents/info', timeout=timeout)
 
     def list_transfer(self, transferid):
         return self.torrent_info(transferid)
@@ -480,6 +477,8 @@ class Deepbrid:
             return None
 
         try:
+            deadline = time.monotonic() + 120.0
+
             torrent_id = self.create_transfer(
                 magnet_url
             )
@@ -491,21 +490,28 @@ class Deepbrid:
                 )
                 return None
 
-            # Deepbrid does not give us a webhook/callback.
-            # Poll the documented /torrents/info endpoint.
-            #
-            # 60 attempts x 2 seconds = 2 minutes.
-            for attempt in range(60):
+            # Deepbrid does not give us a webhook/callback. Poll the
+            # documented /torrents/info endpoint, but enforce the timeout
+            # using wall-clock time so slow HTTP requests cannot stretch a
+            # nominal two-minute poll into a much longer background worker.
+            while time.monotonic() < deadline:
 
                 if control.monitor.abortRequested():
                     return None
 
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+
                 info = self.torrent_info(
-                    torrent_id
+                    torrent_id,
+                    timeout=max(1.0, min(self.timeout, remaining))
                 )
 
                 if not info:
-                    time.sleep(2)
+                    remaining = deadline - time.monotonic()
+                    if remaining > 0:
+                        time.sleep(min(2.0, remaining))
                     continue
 
                 try:
@@ -552,8 +558,15 @@ class Deepbrid:
                     if link:
                         return link
 
+                    # A completed torrent with multiple links cannot be mapped
+                    # to a filename with Deepbrid's current response shape.
+                    # Polling again cannot make that selection deterministic.
+                    return None
+
                 # Don't hammer the API.
-                time.sleep(2)
+                remaining = deadline - time.monotonic()
+                if remaining > 0:
+                    time.sleep(min(2.0, remaining))
 
             log_utils.log(
                 'Deepbrid: torrent timed out after polling',

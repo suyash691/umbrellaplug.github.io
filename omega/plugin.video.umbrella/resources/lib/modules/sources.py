@@ -30,7 +30,7 @@ single_expiry = timedelta(hours=6)
 season_expiry = timedelta(hours=48)
 show_expiry = timedelta(hours=48)
 video_extensions = supported_video_extensions()
-internal_scrapers_clouds_list = [('realdebrid', 'rd_cloud', 'rd'), ('premiumize', 'pm_cloud', 'pm'), ('alldebrid', 'ad_cloud', 'ad'),('torbox', 'tb_cloud', 'tb'),('offcloud', 'oc_cloud', 'oc'), ('deepbrid', 'db_cloud', 'db')]
+internal_scrapers_clouds_list = [('realdebrid', 'rd_cloud', 'rd'), ('premiumize', 'pm_cloud', 'pm'), ('alldebrid', 'ad_cloud', 'ad'),('torbox', 'tb_cloud', 'tb'),('offcloud', 'oc_cloud', 'oc')]
 
 class Sources:
 	def __init__(self, all_providers=False, custom_query=False, filterless_scrape=False, rescrapeAll=False):
@@ -486,7 +486,9 @@ class Sources:
 						progressDialog.update(int((100 / float(len(resolve_items))) * i), '[COLOR %s]Resolving...[/COLOR]%s' % (self.highlight_color, resolve_items[i]['name']))
 					w = Thread(target=self.sourcesResolve, args=(resolve_items[i],))
 					w.start()
-					for x in range(40):
+					is_deepbrid_torrent = resolve_items[i].get('debrid') == 'Deepbrid' and 'magnet:' in resolve_items[i].get('url', '')
+					resolve_wait_loops = 650 if is_deepbrid_torrent else 40
+					for x in range(resolve_wait_loops):
 						try:
 							if control.monitor.abortRequested(): return sysexit()
 							if progressDialog.iscanceled():
@@ -831,6 +833,7 @@ class Sources:
 			homeWindow.setProperty(self.metaProperty, jsdumps(next_meta))
 			if getSetting('autoplay.sd') == 'true': next_sources = [i for i in next_sources if not i['quality'] in ('4K', '1080p', '720p')]
 			uncached_filter = [i for i in next_sources if re.match(r'^uncached.*torrent', i['source'])]
+			uncached_filter += [i for i in next_sources if i.get('debrid') == 'Deepbrid' and i.get('source') == 'unchecked']
 			next_sources = [i for i in next_sources if i not in uncached_filter]
 		except:
 			log_utils.error()
@@ -849,7 +852,7 @@ class Sources:
 								log_utils.log('preResolve failed for : next_sources[i]=%s' % str(next_sources[i]), level=log_utils.LOGWARNING)
 							continue
 						# if not any(x in url.lower() for x in video_extensions):
-						if not any(x in self.url.lower() for x in video_extensions) and 'plex.direct:' not in self.url and 'torbox' not in self.url and 'tb-cdn' not in self.url and 'plugin://plugin.video.composite_for_plex' not in self.url:
+						if not any(x in self.url.lower() for x in video_extensions) and 'plex.direct:' not in self.url and 'torbox' not in self.url and 'tb-cdn' not in self.url and 'deepbrid.com' not in self.url and 'plugin://plugin.video.composite_for_plex' not in self.url:
 							if self.debuglog:
 								log_utils.log('preResolve Playback not supported for (sourcesAutoPlay()): %s' % url, level=log_utils.LOGWARNING)
 							continue
@@ -1161,7 +1164,6 @@ class Sources:
 			'gdrive': 'gdrive',
 			'plexshare': 'plexshare',
 			'filepursuit': 'filepursuit',
-			'db_cloud': 'Deepbrid',
 		}
 
 		def _rank(item):
@@ -1363,6 +1365,19 @@ class Sources:
 	def sourcesAutoPlay(self, items):
 		#control.hide()
 		#control.sleep(200)
+		preferred_items = [
+			i for i in items
+			if not (
+				i.get('debrid') == 'Deepbrid'
+				and i.get('source') == 'unchecked'
+			)
+		]
+
+		if preferred_items:
+			items = preferred_items
+
+		if not items:
+			return None
 		if getSetting('autoplay.sd') == 'true': items = [i for i in items if not i['quality'] in ('4K', '1080p', '720p')]
 		header = homeWindow.getProperty(self.labelProperty) + ': Resolving...'
 		try:
@@ -1407,7 +1422,7 @@ class Sources:
 					if control.monitor.abortRequested(): return sysexit()
 					url = self.sourcesResolve(items[i])
 					# if not any(x in url.lower() for x in video_extensions):
-					if not any(x in self.url.lower() for x in video_extensions) and 'plex.direct:' not in self.url and 'torbox' not in self.url and 'tb-cdn' not in self.url and 'plugin://plugin.video.composite_for_plex' not in self.url:
+					if not any(x in self.url.lower() for x in video_extensions) and 'plex.direct:' not in self.url and 'torbox' not in self.url and 'tb-cdn' not in self.url and 'deepbrid.com' not in self.url and 'plugin://plugin.video.composite_for_plex' not in self.url:
 						log_utils.log('Playback not supported for (sourcesAutoPlay()): %s' % url, level=log_utils.LOGWARNING)
 						continue
 					if url:
@@ -1464,7 +1479,7 @@ class Sources:
 			try:
 				direct = item['direct']
 				if direct:
-					direct_sources = ('ad_cloud', 'oc_cloud', 'pm_cloud', 'rd_cloud', 'tb_cloud', 'db_cloud')
+					direct_sources = ('ad_cloud', 'oc_cloud', 'pm_cloud', 'rd_cloud', 'tb_cloud')
 					if item['provider'] in direct_sources:
 						try:
 							call = [i[1] for i in self.sourceDict if i[0] == item['provider']][0]
@@ -1494,7 +1509,7 @@ class Sources:
 					elif debrid_provider == 'AllDebrid':
 						from resources.lib.debrid.alldebrid import AllDebrid as debrid_function
 					elif debrid_provider == 'Deepbrid':
-        				from resources.lib.debrid.deepbrid import Deepbrid as debrid_function
+						from resources.lib.debrid.deepbrid import Deepbrid as debrid_function
 					else:
 						self.url = url
 						return url
@@ -1521,8 +1536,6 @@ class Sources:
 			# 	from resources.lib.debrid.easydebrid import EasyDebrid as debrid_function
 			elif provider in ('TorBox', 'TB'):
 				from resources.lib.debrid.torbox import TorBox as debrid_function
-			elif provider in ('Deepbrid', 'DB'):
-				from resources.lib.debrid.deepbrid import Deepbrid as debrid_function
 			else: return
 			debrid_files = None
 			control.busy()
@@ -1560,8 +1573,6 @@ class Sources:
 				if not getSetting('torbox.saveToCloud') == 'true':
 					torrent_id = chosen_result.get('link').split(',')[0]
 					debrid_function().delete_torrent(torrent_id)
-			elif provider in ('Deepbrid', 'DB'):
-				self.url = debrid_function().unrestrict_link(chosen_result['link'])
 			from resources.lib.modules import player
 			meta = jsloads(unquote(homeWindow.getProperty(self.metaProperty).replace('%22', '\\"'))) # needed for CM "showDebridPack" action
 			title = meta['tvshowtitle']
@@ -1889,25 +1900,17 @@ class Sources:
 		except: log_utils.error()
 
 	def db_cache_chk_list(self, torrent_List, hashList):
-		if len(torrent_List) == 0:
-			return
-
+		if len(torrent_List) == 0: return
 		try:
-			# Deepbrid does not expose a bulk cache/hash endpoint.
-			# Mark sources as unchecked so they remain available for
-			# resolution instead of disappearing from the source list.
+			# Deepbrid does not expose a bulk cache/hash endpoint. Keep only
+			# single-file torrents because torrent-info does not map returned
+			# links to per-file names for deterministic pack selection.
+			single_torrents = []
 			for i in torrent_List:
-				if 'package' in i:
-					i.update({
-						'source': 'unchecked (pack) torrent'
-					})
-				else:
-					i.update({
-						'source': 'unchecked'
-					})
-
-			return torrent_List
-
+				if 'package' in i: continue
+				i.update({'source': 'unchecked'})
+				single_torrents.append(i)
+			return single_torrents
 		except:
 			log_utils.error()
 
