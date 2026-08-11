@@ -491,7 +491,8 @@ class Deepbrid:
             'generate/link',
             'generate/folder'
         )
-        max_attempts = 3 if method == 'GET' or safe_post else 1
+        retry_transient = method == 'GET' or safe_post
+        max_attempts = 3
 
         for attempt in range(max_attempts):
             response = None
@@ -545,7 +546,11 @@ class Deepbrid:
                     time.sleep(retry_after)
                     continue
 
-                if status in (500, 502, 503, 504) and attempt + 1 < max_attempts:
+                if (
+                    retry_transient
+                    and status in (500, 502, 503, 504)
+                    and attempt + 1 < max_attempts
+                ):
                     delay = min(1.0 * (2 ** attempt), 4.0)
                     if not silent:
                         log_utils.log(
@@ -596,7 +601,7 @@ class Deepbrid:
 
             except (requests.exceptions.Timeout,
                     requests.exceptions.ConnectionError) as e:
-                if attempt + 1 < max_attempts:
+                if retry_transient and attempt + 1 < max_attempts:
                     delay = min(1.0 * (2 ** attempt), 4.0)
                     if not silent:
                         log_utils.log(
