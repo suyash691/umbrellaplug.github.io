@@ -1,0 +1,62 @@
+name: Deepbrid polling diagnostics
+
+on:
+  push:
+    branches:
+      - agent/deepbrid-polling-diagnostics
+    paths:
+      - .github/workflows/deepbrid-polling-diagnostics.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/deepbrid-polling-diagnostics
+
+      - name: Add Deepbrid polling diagnostics
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('omega/plugin.video.umbrella/resources/lib/debrid/deepbrid.py')
+          text = path.read_text(encoding='utf-8')
+
+          old_init = '''        try:\n            deadline = time.monotonic() + 120.0\n\n            torrent_id = self.add_magnet(\n'''
+          new_init = '''        try:\n            deadline = time.monotonic() + 120.0\n            last_status_log = 0.0\n            last_progress = None\n            last_seeders = None\n            last_speed = None\n            last_links_count = 0\n\n            torrent_id = self.add_magnet(\n'''
+
+          if text.count(old_init) != 1:
+              raise SystemExit('resolver init block did not match exactly once')
+          text = text.replace(old_init, new_init, 1)
+
+          old_status = '''                links = info.get('links') or []\n\n                # Deepbrid explicitly states that links are empty\n'''
+          new_status = '''                links = info.get('links') or []\n\n                last_progress = progress\n                last_seeders = info.get('seeders')\n                last_speed = info.get('speed')\n                last_links_count = len(links)\n\n                now = time.monotonic()\n                if (\n                    not last_status_log\n                    or now - last_status_log >= 10.0\n                    or progress >= 100\n                ):\n                    log_utils.log(\n                        'Deepbrid torrent status: '\n                        'id=%s progress=%s seeders=%s speed=%s links=%s' % (\n                            torrent_id,\n                            progress,\n                            last_seeders,\n                            last_speed,\n                            last_links_count\n                        ),\n                        level=log_utils.LOGDEBUG\n                    )\n                    last_status_log = now\n\n                # Deepbrid explicitly states that links are empty\n'''
+
+          if text.count(old_status) != 1:
+              raise SystemExit('resolver status block did not match exactly once')
+          text = text.replace(old_status, new_status, 1)
+
+          old_timeout = '''            log_utils.log(\n                'Deepbrid: torrent timed out after polling',\n                level=log_utils.LOGWARNING\n            )\n'''
+          new_timeout = '''            log_utils.log(\n                'Deepbrid: torrent timed out after polling '\n                'id=%s progress=%s seeders=%s speed=%s links=%s' % (\n                    torrent_id,\n                    last_progress,\n                    last_seeders,\n                    last_speed,\n                    last_links_count\n                ),\n                level=log_utils.LOGWARNING\n            )\n'''
+
+          if text.count(old_timeout) != 1:
+              raise SystemExit('resolver timeout block did not match exactly once')
+          text = text.replace(old_timeout, new_timeout, 1)
+
+          path.write_text(text, encoding='utf-8')
+
+      - name: Remove one-off workflow
+        run: rm .github/workflows/deepbrid-polling-diagnostics.yml
+
+      - name: Commit diagnostics
+        run: |
+          git config user.name "Suyash Saluja"
+          git config user.email "suyash691@live.in"
+          git add omega/plugin.video.umbrella/resources/lib/debrid/deepbrid.py \
+                  .github/workflows/deepbrid-polling-diagnostics.yml
+          git commit -m "Add Deepbrid torrent polling diagnostics"
+          git push origin HEAD:agent/deepbrid-polling-diagnostics
