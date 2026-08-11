@@ -561,7 +561,7 @@ class Deepbrid:
         try:
             deadline = time.monotonic() + 120.0
 
-            torrent_id = self.create_transfer(
+            torrent_id = self.add_magnet(
                 magnet_url
             )
 
@@ -684,7 +684,7 @@ class Deepbrid:
         pack=False
     ):
         return bool(
-            self.create_transfer(magnet_url)
+            self.add_magnet(magnet_url)
         )
 
     # -------------------------------------------------
