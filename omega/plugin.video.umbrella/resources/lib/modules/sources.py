@@ -1899,17 +1899,22 @@ class Sources:
 		except: log_utils.error()
 
 	def db_cache_chk_list(self, torrent_List, hashList):
-		if len(torrent_List) == 0: return
+		if len(torrent_List) == 0:
+			return
+
 		try:
-			# Deepbrid does not expose a bulk cache/hash endpoint. Keep only
-			# single-file torrents because torrent-info does not map returned
-			# links to per-file names for deterministic pack selection.
-			single_torrents = []
 			for i in torrent_List:
-				if 'package' in i: continue
-				i.update({'source': 'unchecked'})
-				single_torrents.append(i)
-			return single_torrents
+				if 'package' in i:
+					i.update({
+						'source': 'unchecked (pack) torrent'
+					})
+				else:
+					i.update({
+						'source': 'unchecked'
+					})
+
+			return torrent_List
+
 		except:
 			log_utils.error()
 

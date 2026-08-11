@@ -11,10 +11,19 @@ import os
 import re
 import requests
 
-from resources.lib.modules import control
-from resources.lib.modules import log_utils
+from resources.lib.modules import (
+    control,
+    log_utils
+)
 from urllib.parse import urlparse, parse_qs, unquote
-
+from resources.lib.modules.source_utils import (
+    seas_ep_filter,
+    extras_filter
+)
+from concurrent.futures import (
+    ThreadPoolExecutor,
+    as_completed
+)
 
 BASE_URL = 'https://www.deepbrid.com/api/v1/'
 USER_AGENT = 'Umbrella-Deepbrid/1.3'
@@ -67,6 +76,60 @@ class Deepbrid:
             ).get('file', [None])[0]
         except Exception:
             return None
+
+    def _probe_torrent_links(self, links):
+        if not links:
+            return []
+
+        results = []
+
+        #
+        # Keep concurrency conservative. Deepbrid / myfast.link
+        # can already be slow, so don't fire 20+ requests at once.
+        #
+        workers = min(4, len(links))
+
+        with ThreadPoolExecutor(
+            max_workers=workers
+        ) as executor:
+
+            futures = {
+                executor.submit(
+                    self._probe_torrent_link,
+                    link,
+                    index
+                ): index
+                for index, link in enumerate(links)
+            }
+
+            for future in as_completed(futures):
+                index = futures[future]
+
+                try:
+                    result = future.result()
+
+                    if result:
+                        results.append(result)
+
+                except Exception as e:
+                    log_utils.log(
+                        'Deepbrid probe worker failed: '
+                        'index=%s error=%s' % (
+                            index,
+                            str(e)
+                        ),
+                        level=log_utils.LOGWARNING
+                    )
+
+        #
+        # Restore Deepbrid's original file order after
+        # concurrent probing.
+        #
+        results.sort(
+            key=lambda item: item.get('index', 0)
+        )
+
+        return results
 
     def _probe_torrent_link(self, link, index):
         response = None
@@ -736,6 +799,140 @@ class Deepbrid:
             for ext in VIDEO_EXTENSIONS
         )
 
+    def _select_probed_file(
+        self,
+        probes,
+        title=None,
+        season=None,
+        episode=None
+    ):
+        if not probes:
+            return None
+
+        videos = [
+            item for item in probes
+            if item and self._is_video_probe(item)
+        ]
+
+        if not videos:
+            log_utils.log(
+                'Deepbrid: no video files found after probing',
+                level=log_utils.LOGWARNING
+            )
+            return None
+
+        #
+        # TV / episode
+        #
+        is_episode = (
+            season is not None
+            and episode is not None
+            and str(season) != ''
+            and str(episode) != ''
+        )
+
+        if is_episode:
+            matches = []
+
+            for item in videos:
+                filename = item.get('filename') or ''
+
+                if not filename:
+                    continue
+
+                if seas_ep_filter(
+                    season,
+                    episode,
+                    filename
+                ):
+                    matches.append(item)
+
+            if not matches:
+                log_utils.log(
+                    'Deepbrid: no file matched S%sE%s. '
+                    'Probed files=%s' % (
+                        str(season).zfill(2),
+                        str(episode).zfill(2),
+                        repr([
+                            i.get('filename')
+                            for i in videos
+                        ])
+                    ),
+                    level=log_utils.LOGWARNING
+                )
+                return None
+
+            #
+            # There can occasionally be multiple files matching the
+            # same episode: alternate encode, sample, etc.
+            #
+            # Prefer the largest actual video.
+            #
+            matches.sort(
+                key=lambda item: item.get('size', 0),
+                reverse=True
+            )
+
+            selected = matches[0]
+
+            log_utils.log(
+                'Deepbrid episode match: '
+                'S%sE%s index=%s filename=%s size=%s' % (
+                    str(season).zfill(2),
+                    str(episode).zfill(2),
+                    selected.get('index'),
+                    selected.get('filename'),
+                    selected.get('size')
+                ),
+                level=log_utils.LOGDEBUG
+            )
+
+            return selected
+
+        #
+        # Movie
+        #
+        title_lower = (title or '').lower()
+
+        extras = tuple(
+            item for item in extras_filter()
+            if item not in title_lower
+        )
+
+        movies = []
+
+        for item in videos:
+            filename = (
+                item.get('filename') or ''
+            ).lower()
+
+            if any(extra in filename for extra in extras):
+                continue
+
+            movies.append(item)
+
+        if not movies:
+            return None
+
+        movies.sort(
+            key=lambda item: item.get('size', 0),
+            reverse=True
+        )
+
+        selected = movies[0]
+
+        log_utils.log(
+            'Deepbrid movie file selected: '
+            'index=%s filename=%s size=%s' % (
+                selected.get('index'),
+                selected.get('filename'),
+                selected.get('size')
+            ),
+            level=log_utils.LOGDEBUG
+        )
+
+        return selected
+
     def _select_torrent_link(self, info):
         links = info.get('links') or []
 
@@ -752,42 +949,19 @@ class Deepbrid:
             return links[0]
 
         if len(links) > 1:
-            probes = []
-
-            for index, link in enumerate(links):
-                result = self._probe_torrent_link(
-                    link,
-                    index
-                )
-
-                if result:
-                    probes.append(result)
-
-            videos = [
-                item for item in probes
-                if self._is_video_probe(item)
-                and not self._is_extra_file(
-                    item.get('filename')
-                )
-            ]
-
-            if not videos:
-                log_utils.log(
-                    'Deepbrid multi-file torrent contained '
-                    'no identifiable video files: %s' %
-                    repr(probes),
-                    level=log_utils.LOGWARNING
-                )
-                return None
-
-            # Movie behavior for now:
-            # largest actual video file wins.
-            videos.sort(
-                key=lambda item: item.get('size', 0),
-                reverse=True
+            probes = self._probe_torrent_links(
+                links
             )
 
-            selected = videos[0]
+            selected = self._select_probed_file(
+                probes,
+                title=title,
+                season=season,
+                episode=episode
+            )
+
+            if not selected:
+                return None
 
             log_utils.log(
                 'Deepbrid selected torrent file: %s' %
