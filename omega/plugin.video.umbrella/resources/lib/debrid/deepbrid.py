@@ -7,11 +7,13 @@
 """
 
 import time
+import os
+import re
 import requests
 
 from resources.lib.modules import control
 from resources.lib.modules import log_utils
-from urllib.parse import unquote
+from urllib.parse import urlparse, parse_qs, unquote
 
 
 BASE_URL = 'https://www.deepbrid.com/api/v1/'
@@ -58,6 +60,212 @@ class Deepbrid:
             if isinstance(value, dict) and value.get('id')
         ]
 
+    def _deepbrid_file_token(self, url):
+        try:
+            return parse_qs(
+                urlparse(url).query
+            ).get('file', [None])[0]
+        except Exception:
+            return None
+
+    def _probe_torrent_link(self, link, index):
+        response = None
+
+        try:
+            response = requests.get(
+                link,
+                headers={
+                    'Range': 'bytes=0-0',
+                    'Accept-Encoding': 'identity'
+                },
+                allow_redirects=True,
+                stream=True,
+                timeout=(10, 60)
+            )
+
+            filename = self._filename_from_headers(response)
+
+            content_type = (
+                response.headers.get('Content-Type', '')
+                .split(';', 1)[0]
+                .strip()
+                .lower()
+            )
+
+            size = 0
+
+            # Prefer total size from:
+            # Content-Range: bytes 0-0/123456789
+            content_range = response.headers.get(
+                'Content-Range', ''
+            )
+
+            if '/' in content_range:
+                try:
+                    size = int(
+                        content_range.rsplit('/', 1)[1]
+                    )
+                except Exception:
+                    pass
+
+            if not size:
+                try:
+                    size = int(
+                        response.headers.get(
+                            'Content-Length'
+                        ) or 0
+                    )
+                except Exception:
+                    pass
+
+            history = [
+                {
+                    'status': r.status_code,
+                    'url': r.url,
+                    'location': r.headers.get('Location')
+                }
+                for r in response.history
+            ]
+
+            result = {
+                'index': index,
+                'filename': filename,
+                'content_type': content_type,
+                'size': size,
+                'status': response.status_code,
+                'final_url': response.url,
+                'history': history
+            }
+
+            log_utils.log(
+                'Deepbrid file probe: %s' % repr(result),
+                level=log_utils.LOGDEBUG
+            )
+
+            return result
+
+        except Exception as e:
+            log_utils.log(
+                'Deepbrid file probe failed: '
+                'index=%s error=%s' % (
+                    index,
+                    str(e)
+                ),
+                level=log_utils.LOGWARNING
+            )
+
+            return None
+
+        finally:
+            if response is not None:
+                try:
+                    response.close()
+                except Exception:
+                    pass
+
+    def _is_video_probe(self, item):
+        filename = (
+            item.get('filename') or ''
+        ).lower()
+
+        content_type = (
+            item.get('content_type') or ''
+        ).lower()
+
+        video_extensions = (
+            '.mkv',
+            '.mp4',
+            '.m4v',
+            '.avi',
+            '.mov',
+            '.webm',
+            '.ts',
+            '.m2ts',
+            '.mpg',
+            '.mpeg',
+            '.wmv'
+        )
+
+        audio_extensions = (
+            '.eac3',
+            '.ac3',
+            '.dts',
+            '.aac',
+            '.flac',
+            '.mp3',
+            '.m4a',
+            '.wav',
+            '.ogg',
+            '.opus'
+        )
+
+        if filename.endswith(audio_extensions):
+            return False
+
+        if filename.endswith(video_extensions):
+            return True
+
+        if content_type.startswith('video/'):
+            return True
+
+        if content_type.startswith('audio/'):
+            return False
+
+        return False
+
+    def _is_extra_file(self, filename):
+        name = (filename or '').lower()
+
+        extras = (
+            'sample',
+            'trailer',
+            'extras',
+            'featurette'
+        )
+
+        return any(x in name for x in extras)
+
+    def _filename_from_headers(self, response):
+        disposition = response.headers.get(
+            'Content-Disposition', ''
+        )
+
+        # RFC 5987 form:
+        # filename*=UTF-8''Some.Movie.mkv
+        match = re.search(
+            r"filename\*\s*=\s*UTF-8''([^;]+)",
+            disposition,
+            re.I
+        )
+
+        if match:
+            return unquote(
+                match.group(1).strip().strip('"')
+            )
+
+        # Normal:
+        # filename="Some.Movie.mkv"
+        match = re.search(
+            r'filename\s*=\s*"?([^";]+)"?',
+            disposition,
+            re.I
+        )
+
+        if match:
+            return match.group(1).strip()
+
+        # Sometimes the redirect destination itself contains
+        # the filename.
+        try:
+            path = unquote(urlparse(response.url).path)
+            name = os.path.basename(path)
+
+            if '.' in name:
+                return name
+        except Exception:
+            pass
+
+        return None
 
     def _magnet_display_name(self, magnet):
         try:
@@ -544,13 +752,99 @@ class Deepbrid:
             return links[0]
 
         if len(links) > 1:
+            probes = []
+
+            for index, link in enumerate(links):
+                result = self._probe_torrent_link(
+                    link,
+                    index
+                )
+
+                if result:
+                    probes.append(result)
+
+            videos = [
+                item for item in probes
+                if self._is_video_probe(item)
+                and not self._is_extra_file(
+                    item.get('filename')
+                )
+            ]
+
+            if not videos:
+                log_utils.log(
+                    'Deepbrid multi-file torrent contained '
+                    'no identifiable video files: %s' %
+                    repr(probes),
+                    level=log_utils.LOGWARNING
+                )
+                return None
+
+            # Movie behavior for now:
+            # largest actual video file wins.
+            videos.sort(
+                key=lambda item: item.get('size', 0),
+                reverse=True
+            )
+
+            selected = videos[0]
+
             log_utils.log(
-                'Deepbrid torrent id=%s filename=%s has %s files; '
-                'cannot safely select playback file' % (
-                    info.get('id'),
-                    info.get('filename'),
-                    len(links)
-                ),
+                'Deepbrid selected torrent file: %s' %
+                repr(selected),
+                level=log_utils.LOGDEBUG
+            )
+
+            #
+            # IMPORTANT:
+            # Refresh links after probing because Deepbrid describes
+            # them as one-time short URLs.
+            #
+            fresh_info = self.torrent_info(
+                info.get('id')
+            )
+
+            if not isinstance(fresh_info, dict):
+                return None
+
+            fresh_links = fresh_info.get('links') or []
+
+            selected_token = selected.get('token')
+
+            # Best case: match the permanent-ish file token.
+            if selected_token:
+                for fresh_link in fresh_links:
+                    if (
+                        self._deepbrid_file_token(fresh_link)
+                        == selected_token
+                    ):
+                        log_utils.log(
+                            'Deepbrid using refreshed selected '
+                            'file link: %s' % fresh_link,
+                            level=log_utils.LOGDEBUG
+                        )
+
+                        return fresh_link
+
+            # Fallback only if link count/order stayed identical.
+            index = selected.get('index')
+
+            if (
+                index is not None
+                and len(fresh_links) == len(links)
+                and index < len(fresh_links)
+            ):
+                log_utils.log(
+                    'Deepbrid using refreshed file by index=%s' %
+                    index,
+                    level=log_utils.LOGDEBUG
+                )
+
+                return fresh_links[index]
+
+            log_utils.log(
+                'Deepbrid could not safely map probed file '
+                'to refreshed torrent link',
                 level=log_utils.LOGWARNING
             )
 
