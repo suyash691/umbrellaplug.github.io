@@ -781,6 +781,21 @@ def router(argv2):
 		elif action == 'db_AccountLimits':
 			from resources.lib.debrid.deepbrid import Deepbrid
 			Deepbrid().account_limits_to_dialog()
+		elif action == 'db_CloudStorage':
+			from resources.lib.debrid.deepbrid import Deepbrid
+			Deepbrid().user_cloud_to_listItem()
+		elif action == 'db_CloudTorrents':
+			from resources.lib.debrid.deepbrid import Deepbrid
+			Deepbrid().cloud_torrents_to_listitem()
+		elif action == 'db_CloudUsenet':
+			from resources.lib.debrid.deepbrid import Deepbrid
+			Deepbrid().cloud_usenet_to_listitem()
+		elif action == 'db_BrowseCloud':
+			from resources.lib.debrid.deepbrid import Deepbrid
+			Deepbrid().browse_user_torrents(params.get('id'), mediatype or 'torrent')
+		elif action == 'db_AddUsenetUrl':
+			from resources.lib.debrid.deepbrid import Deepbrid
+			Deepbrid().add_usenet_url_dialog()
 		elif action == 'db_DownloadHistory':
 			from resources.lib.debrid.deepbrid import Deepbrid
 			Deepbrid().download_history_to_listitem(offset=params.get('offset', '0'))

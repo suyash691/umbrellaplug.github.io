@@ -714,6 +714,8 @@ class Navigator:
 	def deepbrid_service(self, folderName=''):
 		if self.useContainerTitles: control.setContainerName(folderName)
 		if getSetting('deepbrid.token'):
+			self.addDirectoryItem('Deepbrid: Cloud Storage (Read-only)', 'db_CloudStorage&folderName=%s' % quote_plus('Deepbrid Cloud'), 'tools.png', 'DefaultAddonService.png')
+			self.addDirectoryItem('Deepbrid: Add NZB URL', 'db_AddUsenetUrl', 'tools.png', 'DefaultAddonService.png', isFolder=False)
 			self.addDirectoryItem('Deepbrid: Download History', 'db_DownloadHistory&offset=0', 'tools.png', 'DefaultAddonService.png')
 			self.addDirectoryItem('Deepbrid: Hoster Limits', 'db_AccountLimits', 'tools.png', 'DefaultAddonService.png', isFolder=False)
 			self.addDirectoryItem('Deepbrid: Account Info', 'db_AccountInfo', 'tools.png', 'DefaultAddonService.png', isFolder=False)
