@@ -1,0 +1,39 @@
+name: Deepbrid autoplay patch
+
+on:
+  push:
+    branches:
+      - agent/deepbrid-autoplay-pack-filter
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/deepbrid-autoplay-pack-filter
+      - name: Patch Deepbrid unchecked pack filtering
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('omega/plugin.video.umbrella/resources/lib/modules/sources.py')
+          text = path.read_text(encoding='utf-8')
+          old = "i.get('source') == 'unchecked'"
+          new = "str(i.get('source', '')).startswith('unchecked')"
+          count = text.count(old)
+          if count != 2:
+              raise SystemExit(f'Expected 2 Deepbrid unchecked comparisons, found {count}')
+          path.write_text(text.replace(old, new), encoding='utf-8')
+          PY
+      - name: Remove one-off workflow and commit
+        run: |
+          rm .github/workflows/deepbrid-autoplay-patch.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add omega/plugin.video.umbrella/resources/lib/modules/sources.py .github/workflows/deepbrid-autoplay-patch.yml
+          git commit -m "Fix Deepbrid unchecked pack autoplay filtering"
+          git push origin HEAD:agent/deepbrid-autoplay-pack-filter
