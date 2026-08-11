@@ -833,7 +833,7 @@ class Sources:
 			homeWindow.setProperty(self.metaProperty, jsdumps(next_meta))
 			if getSetting('autoplay.sd') == 'true': next_sources = [i for i in next_sources if not i['quality'] in ('4K', '1080p', '720p')]
 			uncached_filter = [i for i in next_sources if re.match(r'^uncached.*torrent', i['source'])]
-			uncached_filter += [i for i in next_sources if i.get('debrid') == 'Deepbrid' and i.get('source') == 'unchecked']
+			uncached_filter += [i for i in next_sources if i.get('debrid') == 'Deepbrid' and str(i.get('source', '')).startswith('unchecked')]
 			next_sources = [i for i in next_sources if i not in uncached_filter]
 		except:
 			log_utils.error()
@@ -1369,7 +1369,7 @@ class Sources:
 			i for i in items
 			if not (
 				i.get('debrid') == 'Deepbrid'
-				and i.get('source') == 'unchecked'
+				and str(i.get('source', '')).startswith('unchecked')
 			)
 		]
 
