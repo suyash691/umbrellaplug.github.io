@@ -1,0 +1,28 @@
+name: Deepbrid post-squash audit
+
+on:
+  push:
+    branches:
+      - agent/deepbrid-post-squash-audit
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Diff whitespace check
+        run: git diff --check fb1fa4fe7fdab82091a6502da3f3610df2dcf71f..HEAD
+      - name: Compile entire Umbrella addon
+        run: python -m compileall -q omega/plugin.video.umbrella
+      - name: Run Deepbrid integration audit
+        run: python .github/scripts/deepbrid_post_squash_audit.py
+      - name: Check tracked Python bytecode
+        run: |
+          if git ls-files '*.pyc' | grep -q .; then
+            echo 'Tracked .pyc files found:'
+            git ls-files '*.pyc'
+            exit 1
+          fi
