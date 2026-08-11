@@ -935,7 +935,7 @@ class Deepbrid:
 
     def _select_torrent_link(
             self,
-            links,
+            info,
             title=None,
             season=None,
             episode=None
@@ -1113,7 +1113,7 @@ class Deepbrid:
                     )
 
                     link = self._select_torrent_link(
-                        links,
+                        info,
                         title=title,
                         season=season,
                         episode=episode
