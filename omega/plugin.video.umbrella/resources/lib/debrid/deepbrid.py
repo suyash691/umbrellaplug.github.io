@@ -77,6 +77,9 @@ class Deepbrid:
             if isinstance(value, dict) and value.get('id')
         ]
 
+    def torrent_list(self):
+        return self._torrent_list()
+
     def _probe_torrent_links(self, links):
         if not links:
             return []
@@ -321,6 +324,116 @@ class Deepbrid:
 
         results.sort(key=lambda item: item.get('index', 0))
         return results
+
+    def torrent_file_metadata(
+        self,
+        request_id,
+        expected_count=0,
+        torrent_name=''
+    ):
+        """Return stable torrent file metadata without caching short URLs."""
+        info = self.torrent_info(request_id)
+        if not isinstance(info, dict):
+            return {}
+
+        error = info.get('error')
+        if error not in (None, 0, '0', False):
+            return {}
+
+        try:
+            progress = int(info.get('progress') or 0)
+        except Exception:
+            progress = 0
+
+        links = info.get('links') or []
+        if progress < 100 or not links:
+            return {}
+
+        try:
+            expected_count = int(expected_count or len(links))
+        except Exception:
+            expected_count = len(links)
+
+        if expected_count != len(links):
+            return {}
+
+        probes = self._probe_torrent_link_names(links)
+        by_index = {
+            item.get('index'): item
+            for item in probes
+            if isinstance(item, dict) and item.get('index') is not None
+        }
+
+        # Retry only the entries whose short redirect did not reveal a name.
+        # This keeps the initial metadata build robust without following the
+        # CDN/file-host redirect or re-probing the whole pack.
+        missing = [
+            index for index in range(len(links))
+            if not (by_index.get(index) or {}).get('filename')
+        ]
+        if missing:
+            with ThreadPoolExecutor(
+                max_workers=min(4, len(missing))
+            ) as executor:
+                futures = {
+                    executor.submit(
+                        self._probe_torrent_link_name,
+                        links[index],
+                        index
+                    ): index
+                    for index in missing
+                }
+                for future in as_completed(futures):
+                    try:
+                        item = future.result()
+                        if item:
+                            by_index[item.get('index')] = item
+                    except Exception:
+                        pass
+
+        files = []
+        for index in range(len(links)):
+            filename = (by_index.get(index) or {}).get('filename') or ''
+            if not filename and len(links) == 1:
+                filename = info.get('filename') or torrent_name or ''
+            files.append({
+                'index': index,
+                'filename': filename
+            })
+
+        named_count = len([item for item in files if item.get('filename')])
+        if not named_count:
+            return {}
+
+        log_utils.log(
+            'Deepbrid torrent metadata scan: id=%s files=%s named=%s' % (
+                request_id,
+                len(files),
+                named_count
+            ),
+            level=log_utils.LOGDEBUG
+        )
+
+        return {
+            'count': len(links),
+            'files': files
+        }
+
+    def cached_torrent_file_metadata(
+        self,
+        request_id,
+        expected_count=0,
+        torrent_name=''
+    ):
+        # File ordering/names are stable, while Deepbrid's short URLs are
+        # explicitly one-time. Cache only index/name metadata for 24 hours.
+        return cache.get(
+            self.torrent_file_metadata,
+            24,
+            str(request_id),
+            int(expected_count or 0),
+            str(torrent_name or '')
+        ) or {}
 
     def _find_episode_file(self, links, season, episode):
         if not links:
@@ -1843,6 +1956,61 @@ class Deepbrid:
         )
         return selected
 
+    def usenet_file_metadata(self, upload_id, upload_title=''):
+        """Return stable NZB file metadata without caching direct links."""
+        info = self.usenet_info(upload_id)
+        if not isinstance(info, dict):
+            return {}
+
+        error = info.get('error')
+        if error not in (None, 0, '0', False):
+            return {}
+
+        raw_files = info.get('files') or []
+        if not raw_files:
+            return {}
+
+        # Do not cache an upload that has not exposed any playable links yet.
+        if not any(
+            isinstance(item, dict) and item.get('link')
+            for item in raw_files
+        ):
+            return {}
+
+        files = []
+        for index, item in enumerate(raw_files):
+            if not isinstance(item, dict):
+                files.append({
+                    'index': index,
+                    'filename': '',
+                    'size': 0
+                })
+                continue
+
+            try:
+                size = int(item.get('size') or 0)
+            except Exception:
+                size = 0
+
+            files.append({
+                'index': index,
+                'filename': item.get('name') or item.get('filename') or '',
+                'size': size
+            })
+
+        return {
+            'count': len(raw_files),
+            'files': files
+        }
+
+    def cached_usenet_file_metadata(self, upload_id, upload_title=''):
+        return cache.get(
+            self.usenet_file_metadata,
+            24,
+            str(upload_id),
+            str(upload_title or '')
+        ) or {}
+
     def resolve_usenet(
         self,
         nzb_url,
@@ -1963,6 +2131,73 @@ class Deepbrid:
     # -------------------------------------------------
     # Cloud (read-only)
     # -------------------------------------------------
+
+    def resolve_cloud_torrent_file(
+        self,
+        request_id,
+        index,
+        expected_count
+    ):
+        """Resolve cached torrent index against fresh one-time links."""
+        info = self.torrent_info(request_id)
+        if not isinstance(info, dict):
+            return None
+
+        error = info.get('error')
+        if error not in (None, 0, '0', False):
+            return None
+
+        links = info.get('links') or []
+        try:
+            index = int(index)
+            expected_count = int(expected_count)
+        except Exception:
+            return None
+
+        if len(links) != expected_count or index < 0 or index >= len(links):
+            log_utils.log(
+                'Deepbrid cloud torrent mapping changed: '
+                'id=%s expected=%s actual=%s index=%s' % (
+                    request_id,
+                    expected_count,
+                    len(links),
+                    index
+                ),
+                level=log_utils.LOGWARNING
+            )
+            return None
+
+        return links[index]
+
+    def resolve_cloud_usenet_file(
+        self,
+        upload_id,
+        index,
+        expected_count
+    ):
+        """Resolve cached NZB index against a fresh upload-info response."""
+        info = self.usenet_info(upload_id)
+        if not isinstance(info, dict):
+            return None
+
+        error = info.get('error')
+        if error not in (None, 0, '0', False):
+            return None
+
+        files = info.get('files') or []
+        try:
+            index = int(index)
+            expected_count = int(expected_count)
+        except Exception:
+            return None
+
+        if len(files) != expected_count or index < 0 or index >= len(files):
+            return None
+
+        item = files[index]
+        if not isinstance(item, dict):
+            return None
+        return item.get('link')
 
     def user_cloud(self, request_id=None):
         if request_id:

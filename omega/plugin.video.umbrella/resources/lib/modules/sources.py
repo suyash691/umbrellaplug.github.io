@@ -30,7 +30,7 @@ single_expiry = timedelta(hours=6)
 season_expiry = timedelta(hours=48)
 show_expiry = timedelta(hours=48)
 video_extensions = supported_video_extensions()
-internal_scrapers_clouds_list = [('realdebrid', 'rd_cloud', 'rd'), ('premiumize', 'pm_cloud', 'pm'), ('alldebrid', 'ad_cloud', 'ad'),('torbox', 'tb_cloud', 'tb'),('offcloud', 'oc_cloud', 'oc')]
+internal_scrapers_clouds_list = [('realdebrid', 'rd_cloud', 'rd'), ('premiumize', 'pm_cloud', 'pm'), ('alldebrid', 'ad_cloud', 'ad'),('torbox', 'tb_cloud', 'tb'),('offcloud', 'oc_cloud', 'oc'),('deepbrid', 'db_cloud', 'deepbrid')]
 
 class Sources:
 	def __init__(self, all_providers=False, custom_query=False, filterless_scrape=False, rescrapeAll=False):
@@ -2057,7 +2057,7 @@ class Sources:
 		settings_append = settings.append
 		for item in internal_scrapers_clouds_list:
 			if self.enabled_debrid_check(item[0], item[2]): settings_append(item[1])
-		active = [i.split('.')[1] for i in settings if getSetting('%s.enabled' % i) == 'true']
+		active = [i.split('.')[-1] for i in settings if getSetting('%s.enabled' % i) == 'true']
 		return active
 
 	def enabled_debrid_check(self, debrid_service, short_name):
