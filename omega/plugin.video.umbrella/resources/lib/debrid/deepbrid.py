@@ -532,6 +532,15 @@ class Deepbrid:
         links = info.get('links') or []
 
         if len(links) == 1:
+            log_utils.log(
+                'Deepbrid returning single-file torrent: '
+                'id=%s filename=%s link=%s' % (
+                    info.get('id'),
+                    info.get('filename'),
+                    links[0]
+                ),
+                level=log_utils.LOGDEBUG
+            )
             return links[0]
 
         if len(links) > 1:
