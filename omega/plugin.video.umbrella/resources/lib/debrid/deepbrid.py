@@ -11,12 +11,13 @@ import os
 import re
 import requests
 
+from sys import argv
 from resources.lib.modules import (
     control,
     log_utils
 )
 from resources.lib.database import cache
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, unquote, quote_plus
 from resources.lib.modules.source_utils import (
     seas_ep_filter,
     extras_filter
@@ -33,6 +34,12 @@ VIDEO_EXTENSIONS = (
     '.mkv', '.mp4', '.avi', '.mov', '.m4v',
     '.ts', '.wmv', '.mpg', '.mpeg', '.webm'
 )
+
+deepbrid_icon = control.joinPath(control.artPath(), 'deepbrid.png')
+if not control.existsPath(deepbrid_icon):
+    deepbrid_icon = control.addonIcon()
+
+addon_fanart = control.addonFanart()
 
 
 class Deepbrid:
@@ -730,36 +737,223 @@ class Deepbrid:
 
         return self._get('user')
 
-    def account_info_to_dialog(self):
-        info = self.account_info()
+    def account_stats(self):
+        if not self.api_key:
+            return {}
 
-        if not info:
+        return self._get('user/stats')
+
+    def account_limits(self):
+        if not self.api_key:
+            return {}
+
+        return self._get('user/limits')
+
+    def account_info_to_dialog(self):
+        from datetime import datetime
+
+        info = self.account_info()
+        if not isinstance(info, dict) or info.get('error'):
             return control.notification(
                 title=self.name,
                 message='Could not get account info',
                 icon='ERROR'
             )
 
+        stats = self.account_stats()
+        if not isinstance(stats, dict) or stats.get('error'):
+            stats = {}
+
         lines = []
+        if info.get('username'):
+            lines.append('Username: %s' % info.get('username'))
+        if info.get('email'):
+            lines.append('Email: %s' % info.get('email'))
+        if info.get('type'):
+            lines.append('Account Type: %s' % str(info.get('type')).capitalize())
 
-        for key in (
-            'username',
-            'email',
-            'type',
-            'subscription',
-            'expiration',
-            'expires'
-        ):
-            if info.get(key):
-                lines.append(
-                    '%s: %s' %
-                    (key.capitalize(), info[key])
-                )
+        expiration = info.get('expiration')
+        if expiration:
+            expiration_text = str(expiration)
+            lines.append('Expiration: %s' % expiration_text)
+            try:
+                expires = datetime.strptime(expiration_text[:10], '%Y-%m-%d').date()
+                days_remaining = (expires - datetime.now().date()).days
+                lines.append('Days Remaining: %s' % days_remaining)
+            except Exception:
+                pass
 
-        control.dialog.ok(
-            self.name,
-            '\n'.join(lines) if lines else str(info)
-        )
+        if info.get('fidelity_points') is not None:
+            lines.append('Fidelity Points: %s' % info.get('fidelity_points'))
+        if info.get('maxDownloads') is not None:
+            lines.append('Max Downloads: %s' % info.get('maxDownloads'))
+        if info.get('maxConnections') is not None:
+            lines.append('Max Connections: %s' % info.get('maxConnections'))
+        if stats.get('downloads') is not None:
+            lines.append('Downloads: %s' % stats.get('downloads'))
+        if stats.get('bandwidth'):
+            lines.append('Bandwidth Used: %s' % stats.get('bandwidth'))
+        if stats.get('torrents') is not None:
+            lines.append('Torrents: %s' % stats.get('torrents'))
+        if stats.get('remote') is not None:
+            lines.append('Remote Uploads: %s' % stats.get('remote'))
+
+        if not lines:
+            lines.append(str(info))
+
+        return control.selectDialog(lines, heading='Deepbrid Account Info')
+
+    def account_limits_to_dialog(self):
+        limits = self.account_limits()
+        if not isinstance(limits, dict) or limits.get('error'):
+            return control.notification(
+                title=self.name,
+                message='Could not get hoster limits',
+                icon='ERROR'
+            )
+
+        hosters = limits.get('hosters') or []
+        lines = []
+        reset = limits.get('reset')
+        if reset:
+            lines.append('[B]Reset: %s[/B]' % str(reset).capitalize())
+
+        for item in hosters:
+            if not isinstance(item, dict):
+                continue
+            domain = item.get('domain') or 'Unknown host'
+            if item.get('type') == 'bandwidth':
+                used = item.get('used_str') or str(item.get('used', 0))
+                limit = item.get('limit_str') or str(item.get('limit', 0))
+                remaining = item.get('remaining_str') or str(item.get('remaining', 0))
+                lines.append('%s: %s / %s (remaining %s)' % (domain, used, limit, remaining))
+            else:
+                lines.append('%s: %s / %s links (remaining %s)' % (
+                    domain,
+                    item.get('used', 0),
+                    item.get('limit', 0),
+                    item.get('remaining', 0)
+                ))
+
+        if not lines:
+            lines.append('No per-hoster limits reported')
+        return control.selectDialog(lines, heading='Deepbrid Hoster Limits')
+
+    def download_history(self, limit=100, offset=0):
+        if not self.api_key:
+            return {}
+        try:
+            limit = max(1, min(int(limit), 500))
+        except Exception:
+            limit = 100
+        try:
+            offset = max(0, int(offset))
+        except Exception:
+            offset = 0
+
+        result = self._get('downloads', params={'limit': limit, 'offset': offset})
+        if not isinstance(result, dict) or result.get('error'):
+            return {}
+        return result
+
+    def download_history_to_listitem(self, offset=0, limit=100):
+        try:
+            offset = max(0, int(offset))
+        except Exception:
+            offset = 0
+        try:
+            limit = max(1, min(int(limit), 500))
+        except Exception:
+            limit = 100
+        try:
+            syshandle = int(argv[1])
+        except Exception:
+            return
+
+        result = self.download_history(limit=limit, offset=offset)
+        if not result:
+            control.notification(
+                title=self.name,
+                message='Could not get download history',
+                icon='ERROR'
+            )
+            control.directory(syshandle, cacheToDisc=False)
+            return
+
+        items = result.get('data') or []
+        total = result.get('count')
+        try:
+            total = int(total)
+        except Exception:
+            total = offset + len(items)
+
+        sysaddon = 'plugin://plugin.video.umbrella/'
+        for index, item in enumerate(items, offset + 1):
+            if not isinstance(item, dict):
+                continue
+            filename = item.get('filename') or 'Unknown file'
+            size = item.get('size') or 'Unknown size'
+            date = item.get('date') or ''
+            original = item.get('original') or ''
+            direct = item.get('download') or ''
+
+            label = '%03d | [B]%s[/B] | %s' % (index, filename, size)
+            if date:
+                label += ' | %s' % date
+
+            listitem = control.item(label=label, offscreen=True)
+            listitem.setArt({
+                'icon': deepbrid_icon,
+                'poster': deepbrid_icon,
+                'thumb': deepbrid_icon,
+                'fanart': addon_fanart,
+                'banner': deepbrid_icon
+            })
+            plot = 'Size: %s' % size
+            if date:
+                plot += '[CR]Date: %s' % date
+            if original:
+                plot += '[CR]Original: %s' % original
+            control.set_info(listitem, {'title': filename, 'plot': plot})
+
+            if direct:
+                listitem.setProperty('IsPlayable', 'true')
+                item_url = '%s?action=db_PlayDownload&url=%s' % (sysaddon, quote_plus(direct))
+            else:
+                item_url = ''
+
+            control.addItem(
+                handle=syshandle,
+                url=item_url,
+                listitem=listitem,
+                isFolder=False
+            )
+
+        next_offset = offset + len(items)
+        if items and next_offset < total:
+            label = '[B]Next Page[/B] (%s-%s of %s)' % (
+                next_offset + 1,
+                min(next_offset + limit, total),
+                total
+            )
+            listitem = control.item(label=label, offscreen=True)
+            listitem.setArt({
+                'icon': deepbrid_icon,
+                'poster': deepbrid_icon,
+                'thumb': deepbrid_icon,
+                'fanart': addon_fanart,
+                'banner': deepbrid_icon
+            })
+            control.set_info(listitem, {'title': label})
+            control.addItem(
+                handle=syshandle,
+                url='%s?action=db_DownloadHistory&offset=%s' % (sysaddon, next_offset),
+                listitem=listitem,
+                isFolder=True
+            )
+
+        control.content(syshandle, 'files')
+        control.directory(syshandle, cacheToDisc=False)
 
     # -------------------------------------------------
     # Hoster support
