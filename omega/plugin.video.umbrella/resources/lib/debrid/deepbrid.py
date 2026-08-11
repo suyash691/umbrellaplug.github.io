@@ -1109,6 +1109,11 @@ class Deepbrid:
 
         try:
             deadline = time.monotonic() + 120.0
+            last_status_log = 0.0
+            last_progress = None
+            last_seeders = None
+            last_speed = None
+            last_links_count = 0
 
             torrent_id = self.add_magnet(
                 magnet_url
@@ -1168,6 +1173,30 @@ class Deepbrid:
 
                 links = info.get('links') or []
 
+                last_progress = progress
+                last_seeders = info.get('seeders')
+                last_speed = info.get('speed')
+                last_links_count = len(links)
+
+                now = time.monotonic()
+                if (
+                    not last_status_log
+                    or now - last_status_log >= 10.0
+                    or progress >= 100
+                ):
+                    log_utils.log(
+                        'Deepbrid torrent status: '
+                        'id=%s progress=%s seeders=%s speed=%s links=%s' % (
+                            torrent_id,
+                            progress,
+                            last_seeders,
+                            last_speed,
+                            last_links_count
+                        ),
+                        level=log_utils.LOGDEBUG
+                    )
+                    last_status_log = now
+
                 # Deepbrid explicitly states that links are empty
                 # until progress reaches 100.
                 if progress >= 100 and links:
@@ -1192,7 +1221,14 @@ class Deepbrid:
                     time.sleep(min(2.0, remaining))
 
             log_utils.log(
-                'Deepbrid: torrent timed out after polling',
+                'Deepbrid: torrent timed out after polling '
+                'id=%s progress=%s seeders=%s speed=%s links=%s' % (
+                    torrent_id,
+                    last_progress,
+                    last_seeders,
+                    last_speed,
+                    last_links_count
+                ),
                 level=log_utils.LOGWARNING
             )
 
