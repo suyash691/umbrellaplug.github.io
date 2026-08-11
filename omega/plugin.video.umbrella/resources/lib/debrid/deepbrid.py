@@ -630,11 +630,7 @@ class Deepbrid:
                     )
 
                     link = self._select_torrent_link(
-                        links,
-                        filename=filename,
-                        season=season,
-                        episode=episode,
-                        title=title
+                        info
                     )
 
                     if link:
