@@ -226,6 +226,148 @@ class Deepbrid:
                 except Exception:
                     pass
 
+    def _probe_torrent_link_name(self, link, index):
+        response = None
+
+        try:
+            # For TV packs we only need the filename. Deepbrid's short URL
+            # redirects to a path containing the real filename, so do not
+            # follow the redirect or wait for the file host to respond.
+            response = requests.get(
+                link,
+                headers={
+                    'Range': 'bytes=0-0',
+                    'Accept-Encoding': 'identity'
+                },
+                allow_redirects=False,
+                stream=True,
+                timeout=(5, 10)
+            )
+
+            location = response.headers.get('Location') or ''
+            filename = None
+
+            if location:
+                try:
+                    path = unquote(
+                        urlparse(location).path
+                    )
+                    filename = os.path.basename(path)
+                except Exception:
+                    pass
+
+            result = {
+                'index': index,
+                'filename': filename,
+                'status': response.status_code,
+                'location': location
+            }
+
+            log_utils.log(
+                'Deepbrid fast file probe: %s' % repr(result),
+                level=log_utils.LOGDEBUG
+            )
+
+            return result
+
+        except Exception as e:
+            log_utils.log(
+                'Deepbrid fast probe failed: '
+                'index=%s error=%s' % (
+                    index,
+                    str(e)
+                ),
+                level=log_utils.LOGWARNING
+            )
+            return None
+
+        finally:
+            if response is not None:
+                try:
+                    response.close()
+                except Exception:
+                    pass
+
+    def _find_episode_file(self, links, season, episode):
+        if not links:
+            return None
+
+        # Probe small batches and stop as soon as the requested episode is
+        # found. This avoids probing an entire full-series pack before play.
+        batch_size = 8
+
+        for start in range(0, len(links), batch_size):
+            batch = list(
+                enumerate(
+                    links[start:start + batch_size],
+                    start=start
+                )
+            )
+
+            matches = []
+
+            with ThreadPoolExecutor(
+                max_workers=min(batch_size, len(batch))
+            ) as executor:
+                futures = [
+                    executor.submit(
+                        self._probe_torrent_link_name,
+                        link,
+                        index
+                    )
+                    for index, link in batch
+                ]
+
+                for future in as_completed(futures):
+                    try:
+                        item = future.result()
+                    except Exception:
+                        continue
+
+                    if not item:
+                        continue
+
+                    filename = item.get('filename') or ''
+
+                    if (
+                        filename
+                        and seas_ep_filter(
+                            season,
+                            episode,
+                            filename
+                        )
+                    ):
+                        matches.append(item)
+
+            if matches:
+                matches.sort(
+                    key=lambda item: item.get('index', 0)
+                )
+                selected = matches[0]
+
+                log_utils.log(
+                    'Deepbrid episode fast match: '
+                    'S%sE%s index=%s filename=%s' % (
+                        str(season).zfill(2),
+                        str(episode).zfill(2),
+                        selected.get('index'),
+                        selected.get('filename')
+                    ),
+                    level=log_utils.LOGDEBUG
+                )
+
+                return selected
+
+        log_utils.log(
+            'Deepbrid: no file matched S%sE%s' % (
+                str(season).zfill(2),
+                str(episode).zfill(2)
+            ),
+            level=log_utils.LOGWARNING
+        )
+
+        return None
+
     def _is_video_probe(self, item):
         filename = (
             item.get('filename') or ''
@@ -955,16 +1097,29 @@ class Deepbrid:
             return links[0]
 
         if len(links) > 1:
-            probes = self._probe_torrent_links(
-                links
+            is_episode = (
+                season not in (None, '')
+                and episode not in (None, '')
             )
 
-            selected = self._select_probed_file(
-                probes,
-                title=title,
-                season=season,
-                episode=episode
-            )
+            if is_episode:
+                selected = self._find_episode_file(
+                    links,
+                    season,
+                    episode
+                )
+            else:
+                # Keep the known-working movie path unchanged.
+                probes = self._probe_torrent_links(
+                    links
+                )
+
+                selected = self._select_probed_file(
+                    probes,
+                    title=title,
+                    season=None,
+                    episode=None
+                )
 
             if not selected:
                 return None
@@ -975,11 +1130,9 @@ class Deepbrid:
                 level=log_utils.LOGDEBUG
             )
 
-            #
-            # IMPORTANT:
-            # Refresh links after probing because Deepbrid describes
-            # them as one-time short URLs.
-            #
+            # Refresh links after probing because Deepbrid describes them as
+            # one-time short URLs. File tokens change, so preserve mapping by
+            # index only when the refreshed list length is unchanged.
             fresh_info = self.torrent_info(
                 info.get('id')
             )
@@ -988,25 +1141,6 @@ class Deepbrid:
                 return None
 
             fresh_links = fresh_info.get('links') or []
-
-            selected_token = selected.get('token')
-
-            # Best case: match the permanent-ish file token.
-            if selected_token:
-                for fresh_link in fresh_links:
-                    if (
-                        self._deepbrid_file_token(fresh_link)
-                        == selected_token
-                    ):
-                        log_utils.log(
-                            'Deepbrid using refreshed selected '
-                            'file link: %s' % fresh_link,
-                            level=log_utils.LOGDEBUG
-                        )
-
-                        return fresh_link
-
-            # Fallback only if link count/order stayed identical.
             index = selected.get('index')
 
             if (
