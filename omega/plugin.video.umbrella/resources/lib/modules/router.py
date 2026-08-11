@@ -766,7 +766,10 @@ def router(argv2):
 			offcloud.Offcloud().user_cloud_clear()
 
 	elif action and action.startswith('db_'):
-		if action == 'db_Authorize':
+		if action == 'db_ServiceNavigator':
+			from resources.lib.menus import navigator
+			navigator.Navigator().deepbrid_service(folderName=folderName)
+		elif action == 'db_Authorize':
 			from resources.lib.debrid.deepbrid import Deepbrid
 			Deepbrid().auth()
 		elif action == 'db_Revoke':
@@ -775,6 +778,15 @@ def router(argv2):
 		elif action == 'db_AccountInfo':
 			from resources.lib.debrid.deepbrid import Deepbrid
 			Deepbrid().account_info_to_dialog()
+		elif action == 'db_AccountLimits':
+			from resources.lib.debrid.deepbrid import Deepbrid
+			Deepbrid().account_limits_to_dialog()
+		elif action == 'db_DownloadHistory':
+			from resources.lib.debrid.deepbrid import Deepbrid
+			Deepbrid().download_history_to_listitem(offset=params.get('offset', '0'))
+		elif action == 'db_PlayDownload':
+			if url:
+				control.player.play(url.replace(' ', '%20'))
 
 
 	####################################################
