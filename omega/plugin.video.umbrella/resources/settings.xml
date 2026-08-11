@@ -4701,6 +4701,20 @@
 					</control>
 				</setting>
 
+				<setting id="db_cloud.enabled" type="boolean" label="32050" help="">
+					<level>0</level>
+					<default>false</default>
+					<dependencies>
+						<dependency type="visible">
+							<and>
+								<condition operator="!is" setting="deepbrid.token"/>
+								<condition operator="is" setting="deepbrid.enable">true</condition>
+							</and>
+						</dependency>
+					</dependencies>
+					<control type="toggle"/>
+				</setting>
+
 				<setting id="dbAuthorizeButton" type="action" label="40121" help="">
 					<level>0</level>
 					<data>RunPlugin(plugin://plugin.video.umbrella/?action=db_Authorize)</data>
