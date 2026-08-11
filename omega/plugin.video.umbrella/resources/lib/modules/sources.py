@@ -1375,7 +1375,6 @@ class Sources:
 
 		if preferred_items:
 			items = preferred_items
-
 		if not items:
 			return None
 		if getSetting('autoplay.sd') == 'true': items = [i for i in items if not i['quality'] in ('4K', '1080p', '720p')]
