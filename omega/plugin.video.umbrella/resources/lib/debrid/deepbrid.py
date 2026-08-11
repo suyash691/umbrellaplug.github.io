@@ -11,6 +11,7 @@ import requests
 
 from resources.lib.modules import control
 from resources.lib.modules import log_utils
+from urllib.parse import unquote
 
 
 BASE_URL = 'https://www.deepbrid.com/api/v1/'
@@ -45,6 +46,32 @@ class Deepbrid:
     # -------------------------------------------------
     # Internal helpers
     # -------------------------------------------------
+
+    def _torrent_list(self):
+        result = self._get('torrents/info', silent=True)
+
+        if not isinstance(result, dict):
+            return []
+
+        return [
+            value for value in result.values()
+            if isinstance(value, dict) and value.get('id')
+        ]
+
+
+    def _magnet_display_name(self, magnet):
+        try:
+            query = magnet.split('?', 1)[1]
+
+            for part in query.split('&'):
+                if part.startswith('dn='):
+                    # Use unquote rather than unquote_plus:
+                    # names such as HDR10+ contain a literal '+'.
+                    return unquote(part[3:]).strip()
+        except Exception:
+            pass
+
+        return None
 
     def _set_auth(self, key):
         self.api_key = (key or '').strip()
@@ -369,30 +396,111 @@ class Deepbrid:
         if not self.api_key or not magnet:
             return None
 
-        # Deepbrid expects application/x-www-form-urlencoded.
-        return self._post(
+        if not magnet:
+            return None
+
+        magnet = str(magnet).strip()
+
+        if not magnet.lower().startswith('magnet:?'):
+            decoded = unquote(magnet)
+
+            if decoded.lower().startswith('magnet:?'):
+                magnet = decoded
+            else:
+                return None
+
+        # Snapshot current IDs so we can identify a newly-created torrent
+        # if Deepbrid returns error=0 but id=None.
+        before = self._torrent_list()
+        before_ids = {
+            str(item.get('id'))
+            for item in before
+            if item.get('id')
+        }
+
+        result = self._post(
             'torrents/add',
             data={'magnet': magnet}
         )
 
-    def create_transfer(self, magnet_url):
-        result = self.add_magnet(magnet_url)
-
-        if not result:
-            return None
-
-        torrent_id = (
-            result.get('id') or
-            result.get('torrent_id')
+        log_utils.log(
+            'Deepbrid add torrent response: %s' % repr(result),
+            level=log_utils.LOGDEBUG
         )
 
-        if not torrent_id:
-            data = result.get('data')
+        if not isinstance(result, dict):
+            return None
 
-            if isinstance(data, dict):
-                torrent_id = data.get('id')
+        torrent_id = result.get('id')
 
-        return torrent_id
+        if torrent_id:
+            return str(torrent_id)
+
+        if result.get('error') != 0:
+            log_utils.log(
+                'Deepbrid torrent rejected: error=%s message=%s' % (
+                    result.get('error'),
+                    result.get('message')
+                ),
+                level=log_utils.LOGWARNING
+            )
+            return None
+
+        # Deepbrid sometimes returns error=0/id=None for a torrent
+        # that already exists (or was added without its ID being returned).
+        expected_name = self._magnet_display_name(magnet)
+
+        for attempt in range(3):
+            if attempt:
+                time.sleep(1)
+
+            after = self._torrent_list()
+
+            # Safest recovery: exactly one new torrent appeared.
+            new_torrents = [
+                item for item in after
+                if str(item.get('id')) not in before_ids
+            ]
+
+            if len(new_torrents) == 1:
+                recovered_id = str(new_torrents[0]['id'])
+
+                log_utils.log(
+                    'Deepbrid recovered newly-created torrent id=%s' %
+                    recovered_id,
+                    level=log_utils.LOGDEBUG
+                )
+
+                return recovered_id
+
+            # Duplicate/add-existing case: match the magnet's display name.
+            if expected_name:
+                matches = [
+                    item for item in after
+                    if str(item.get('filename', '')).strip() == expected_name
+                ]
+
+                # Don't guess if filenames are ambiguous.
+                if len(matches) == 1:
+                    recovered_id = str(matches[0]['id'])
+
+                    log_utils.log(
+                        'Deepbrid recovered existing torrent id=%s '
+                        'filename=%s' % (
+                            recovered_id,
+                            expected_name
+                        ),
+                        level=log_utils.LOGDEBUG
+                    )
+
+                    return recovered_id
+
+        log_utils.log(
+            'Deepbrid returned OK with no torrent ID and recovery failed',
+            level=log_utils.LOGWARNING
+        )
+
+        return None
 
     def torrent_info(self, request_id='', timeout=None):
         if request_id:
@@ -420,49 +528,32 @@ class Deepbrid:
             for ext in VIDEO_EXTENSIONS
         )
 
-    def _select_torrent_link(
-        self,
-        links,
-        filename='',
-        season=None,
-        episode=None,
-        title=None
-    ):
-        if not links:
-            return None
+    def _select_torrent_link(self, info):
+        links = info.get('links') or []
 
-        links = [
-            i for i in links
-            if isinstance(i, str) and i.startswith('http')
-        ]
-
-        if not links:
-            return None
-
-        # Deepbrid currently returns one URL per file.
-        # Prefer a URL that looks like a playable video.
-        video_links = [
-            i for i in links
-            if self._is_video_link(i, filename)
-        ]
-
-        if len(video_links) == 1:
-            return video_links[0]
-
-        if video_links:
-            links = video_links
-
-        # If there is only one file, there is nothing more to select.
         if len(links) == 1:
+            log_utils.log(
+                'Deepbrid returning single-file torrent: '
+                'id=%s filename=%s link=%s' % (
+                    info.get('id'),
+                    info.get('filename'),
+                    links[0]
+                ),
+                level=log_utils.LOGDEBUG
+            )
             return links[0]
 
-        # Deepbrid's API currently does not expose the individual
-        # filenames alongside each URL, so we cannot reliably map
-        # multiple pack files to SxxExx here.
-        #
-        # Returning the first playable URL is preferable to trying
-        # to manufacture a filename/file-index relationship that
-        # the API does not provide.
+        if len(links) > 1:
+            log_utils.log(
+                'Deepbrid torrent id=%s filename=%s has %s files; '
+                'cannot safely select playback file' % (
+                    info.get('id'),
+                    info.get('filename'),
+                    len(links)
+                ),
+                level=log_utils.LOGWARNING
+            )
+
         return None
 
     def resolve_magnet(
@@ -479,7 +570,7 @@ class Deepbrid:
         try:
             deadline = time.monotonic() + 120.0
 
-            torrent_id = self.create_transfer(
+            torrent_id = self.add_magnet(
                 magnet_url
             )
 
@@ -548,11 +639,7 @@ class Deepbrid:
                     )
 
                     link = self._select_torrent_link(
-                        links,
-                        filename=filename,
-                        season=season,
-                        episode=episode,
-                        title=title
+                        info
                     )
 
                     if link:
@@ -602,7 +689,7 @@ class Deepbrid:
         pack=False
     ):
         return bool(
-            self.create_transfer(magnet_url)
+            self.add_magnet(magnet_url)
         )
 
     # -------------------------------------------------
