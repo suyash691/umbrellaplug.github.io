@@ -15,7 +15,7 @@ from resources.lib.modules import (
     control,
     log_utils
 )
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, unquote
 from resources.lib.modules.source_utils import (
     seas_ep_filter,
     extras_filter
@@ -68,14 +68,6 @@ class Deepbrid:
             value for value in result.values()
             if isinstance(value, dict) and value.get('id')
         ]
-
-    def _deepbrid_file_token(self, url):
-        try:
-            return parse_qs(
-                urlparse(url).query
-            ).get('file', [None])[0]
-        except Exception:
-            return None
 
     def _probe_torrent_links(self, links):
         if not links:
@@ -417,18 +409,6 @@ class Deepbrid:
             return False
 
         return False
-
-    def _is_extra_file(self, filename):
-        name = (filename or '').lower()
-
-        extras = (
-            'sample',
-            'trailer',
-            'extras',
-            'featurette'
-        )
-
-        return any(x in name for x in extras)
 
     def _filename_from_headers(self, response):
         disposition = response.headers.get(
@@ -809,9 +789,6 @@ class Deepbrid:
         if not self.api_key or not magnet:
             return None
 
-        if not magnet:
-            return None
-
         magnet = str(magnet).strip()
 
         if not magnet.lower().startswith('magnet:?'):
@@ -925,9 +902,6 @@ class Deepbrid:
 
         return self._get('torrents/info', timeout=timeout)
 
-    def list_transfer(self, transferid):
-        return self.torrent_info(transferid)
-
     def _is_video_link(self, link, filename=''):
         text = '%s %s' % (
             link or '',
@@ -944,9 +918,7 @@ class Deepbrid:
     def _select_probed_file(
         self,
         probes,
-        title=None,
-        season=None,
-        episode=None
+        title=None
     ):
         if not probes:
             return None
@@ -963,77 +935,6 @@ class Deepbrid:
             )
             return None
 
-        #
-        # TV / episode
-        #
-        is_episode = (
-            season is not None
-            and episode is not None
-            and str(season) != ''
-            and str(episode) != ''
-        )
-
-        if is_episode:
-            matches = []
-
-            for item in videos:
-                filename = item.get('filename') or ''
-
-                if not filename:
-                    continue
-
-                if seas_ep_filter(
-                    season,
-                    episode,
-                    filename
-                ):
-                    matches.append(item)
-
-            if not matches:
-                log_utils.log(
-                    'Deepbrid: no file matched S%sE%s. '
-                    'Probed files=%s' % (
-                        str(season).zfill(2),
-                        str(episode).zfill(2),
-                        repr([
-                            i.get('filename')
-                            for i in videos
-                        ])
-                    ),
-                    level=log_utils.LOGWARNING
-                )
-                return None
-
-            #
-            # There can occasionally be multiple files matching the
-            # same episode: alternate encode, sample, etc.
-            #
-            # Prefer the largest actual video.
-            #
-            matches.sort(
-                key=lambda item: item.get('size', 0),
-                reverse=True
-            )
-
-            selected = matches[0]
-
-            log_utils.log(
-                'Deepbrid episode match: '
-                'S%sE%s index=%s filename=%s size=%s' % (
-                    str(season).zfill(2),
-                    str(episode).zfill(2),
-                    selected.get('index'),
-                    selected.get('filename'),
-                    selected.get('size')
-                ),
-                level=log_utils.LOGDEBUG
-            )
-
-            return selected
-
-        #
-        # Movie
-        #
         title_lower = (title or '').lower()
 
         extras = tuple(
@@ -1116,9 +1017,7 @@ class Deepbrid:
 
                 selected = self._select_probed_file(
                     probes,
-                    title=title,
-                    season=None,
-                    episode=None
+                    title=title
                 )
 
             if not selected:
@@ -1239,13 +1138,6 @@ class Deepbrid:
                 # Deepbrid explicitly states that links are empty
                 # until progress reaches 100.
                 if progress >= 100 and links:
-
-                    filename = (
-                        info.get('filename') or
-                        title or
-                        ''
-                    )
-
                     link = self._select_torrent_link(
                         info,
                         title=title,
