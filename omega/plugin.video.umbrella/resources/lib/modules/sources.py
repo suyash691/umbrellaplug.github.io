@@ -1476,7 +1476,7 @@ class Sources:
 			try:
 				direct = item['direct']
 				if direct:
-					direct_sources = ('ad_cloud', 'oc_cloud', 'pm_cloud', 'rd_cloud', 'tb_cloud')
+					direct_sources = ('ad_cloud', 'oc_cloud', 'pm_cloud', 'rd_cloud', 'tb_cloud', 'db_cloud')
 					if item['provider'] in direct_sources:
 						try:
 							call = [i[1] for i in self.sourceDict if i[0] == item['provider']][0]
