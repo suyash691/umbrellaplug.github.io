@@ -128,7 +128,7 @@ print('Methods only referenced at their definition:', ', '.join(likely_dead) if 
 section('Router / navigator symmetry')
 nav_src = text(NAVIGATOR)
 router_src = text(ROUTER)
-nav_actions = sorted(set(re.findall(r'action=(db_[A-Za-z0-9_]+)', nav_src)))
+nav_actions = sorted(set(re.findall(r"['\"](db_[A-Za-z0-9_]+)", nav_src)))
 router_actions = sorted(set(re.findall(r"action\s*==\s*['\"](db_[A-Za-z0-9_]+)['\"]", router_src)))
 print('Navigator db actions:', nav_actions)
 print('Router db actions:', router_actions)
@@ -138,13 +138,15 @@ if missing_routes:
     errors.append('Navigator db actions missing router handlers: ' + ', '.join(missing_routes))
 
 section('db_cloud registration / resolver wiring')
+sources_src = text(SOURCES)
 checks = {
     'cloud loader registration': 'db_cloud' in text(CLOUD_INIT),
-    'sources cloud list registration': "('deepbrid', 'db_cloud', 'db')" in text(SOURCES),
-    'sources direct resolver registration': "'db_cloud'" in text(SOURCES),
+    'sources cloud list registration': "('deepbrid', 'db_cloud', 'deepbrid')" in sources_src,
+    'sources direct resolver registration': "'db_cloud'" in sources_src,
     'db_cloud setting': 'db_cloud.enabled' in text(SETTINGS),
     'db_cloud provider implementation': "'provider': 'db_cloud'" in text(DB_CLOUD),
     'Deepbrid resolver enabled': 'deepbrid.Deepbrid()' in text(DEBRID_MODULE),
+    'Deepbrid token convention': "getSetting('%s.token' % debrid_service)" in sources_src,
 }
 for label, ok in checks.items():
     print(f'{label}: {"OK" if ok else "MISSING"}')
@@ -155,7 +157,11 @@ section('Known unsupported-action guards')
 source_results = text(SOURCE_RESULTS)
 for phrase in ('showDebridPack', 'saveToCloud'):
     print(phrase, 'present:', phrase in source_results)
-print('Deepbrid exclusion references in source_results:', source_results.count("Deepbrid"))
+print('Deepbrid exclusion references in source_results:', source_results.count('Deepbrid'))
+if "debrid != 'Deepbrid' and 'cached (pack)'" not in source_results:
+    errors.append('Deepbrid Browse Pack exclusion missing')
+if "debrid not in ('EasyDebrid', 'Deepbrid')" not in source_results:
+    errors.append('Deepbrid Save-to-Cloud exclusion missing')
 
 section('Suspicious stale symbols / generated artifacts')
 suspects = [
