@@ -1760,29 +1760,6 @@ class Deepbrid:
             )
             return None
 
-    def display_magnet_pack(
-        self,
-        magnet_url,
-        info_hash=None
-    ):
-        """
-        Deepbrid's current torrent-info API does not expose
-        per-file names alongside the returned links.
-
-        Returning an empty list prevents Umbrella's pack dialog
-        from presenting misleading file choices.
-        """
-        return []
-
-    def add_uncached_torrent(
-        self,
-        magnet_url,
-        pack=False
-    ):
-        return bool(
-            self.add_magnet(magnet_url)
-        )
-
     # -------------------------------------------------
     # Usenet
     # -------------------------------------------------
