@@ -370,10 +370,32 @@ class Deepbrid:
             return None
 
         # Deepbrid expects application/x-www-form-urlencoded.
-        return self._post(
+        result = self._post(
             'torrents/add',
             data={'magnet': magnet}
         )
+
+        log_utils.log(
+            'Deepbrid add torrent response: %s' % repr(result),
+            level=log_utils.LOGDEBUG
+        )
+
+        if not result:
+            return None
+
+        torrent_id = result.get('id')
+
+        if not torrent_id:
+            log_utils.log(
+                'Deepbrid add torrent rejected: error=%s message=%s response=%s' % (
+                    result.get('error'),
+                    result.get('message'),
+                    repr(result)
+                ),
+                level=log_utils.LOGWARNING
+            )
+
+        return torrent_id
 
     def create_transfer(self, magnet_url):
         result = self.add_magnet(magnet_url)

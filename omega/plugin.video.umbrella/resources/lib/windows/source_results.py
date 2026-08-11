@@ -237,7 +237,7 @@ class SourceResultsXML(BaseDialog):
 
 	def debrid_abv(self, debrid):
 		try:
-			d_dict = {'AllDebrid': 'AD', 'EasyDebrid': 'ED','Premiumize.me': 'PM', 'Real-Debrid': 'RD', 'Torbox': 'TB', 'Offcloud': 'OC'}
+			d_dict = {'AllDebrid': 'AD', 'EasyDebrid': 'ED','Premiumize.me': 'PM', 'Real-Debrid': 'RD', 'Torbox': 'TB', 'Offcloud': 'OC', 'Deepbrid': 'DB'}
 			d = d_dict[debrid]
 		except:
 			d = ''
@@ -245,7 +245,7 @@ class SourceResultsXML(BaseDialog):
 
 	def debrid_name(self, debrid):
 		try:
-			d_dict = {'AllDebrid': 'AllDebrid', 'EasyDebrid': 'EasyDebrid','Premiumize.me': 'Premiumize', 'Real-Debrid': 'Real-Debrid', 'TorBox': 'TorBox', 'Offcloud': 'Offcloud'}
+			d_dict = {'AllDebrid': 'AllDebrid', 'EasyDebrid': 'EasyDebrid','Premiumize.me': 'Premiumize', 'Real-Debrid': 'Real-Debrid', 'TorBox': 'TorBox', 'Offcloud': 'Offcloud', 'Deepbrid': 'Deepbrid'}
 			d = d_dict[debrid]
 		except:
 			d = ''
@@ -276,6 +276,8 @@ class SourceResultsXML(BaseDialog):
 								providerHighlight = self.easyDebridHighlightColor
 							elif str(item.get('debrid')).lower()== 'offcloud':
 								providerHighlight = self.offcloudHighlightColor
+							elif str(item.get('debrid')).lower() == 'deepbrid':
+								providerHighlight = self.sourceHighlightColor
 						else:
 							if item.get('provider') == 'easynews':
 								providerHighlight = self.easynewsHighlightColor

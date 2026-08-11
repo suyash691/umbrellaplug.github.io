@@ -433,7 +433,7 @@ class Sources:
 				next_end = min(source_len, source_index+41)
 				sources_next = items[source_index+1:next_end]
 				sources_prev = [] if next_end < source_len else items[0:41-(source_len-source_index)]
-				if getSetting('sources.useonlyone')== 'true':
+				if getSetting('sources.useonlyone')== 'true' or chosen_source[0].get('debrid') == 'Deepbrid':
 					resolve_items = chosen_source
 				else:
 					resolve_items = [i for i in chosen_source + sources_next + sources_prev]
