@@ -1136,8 +1136,6 @@ class Sources:
 			directstart.extend([i for i in direct if i['provider'] == 'tb_cloud'])
 		if getSetting('oc_cloud.enabled') == 'true':
 			directstart.extend([i for i in direct if i['provider'] == 'oc_cloud'])
-		if getSetting('db_cloud.enabled') == 'true':
-			directstart.extend([i for i in direct if i['provider'] == 'db_cloud'])
 
 		# de-dupe cloud/direct entries across providers (keep best one)
 		def _key(it):
