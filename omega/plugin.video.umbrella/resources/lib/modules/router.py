@@ -799,6 +799,33 @@ def router(argv2):
 		elif action == 'db_DownloadHistory':
 			from resources.lib.debrid.deepbrid import Deepbrid
 			Deepbrid().download_history_to_listitem(offset=params.get('offset', '0'))
+		elif action == 'db_PlayCloud':
+			token = params.get('token') or ''
+			resolved = None
+			try:
+				kind, request_id, index, expected_count = token.split(',', 3)
+				from resources.lib.debrid.deepbrid import Deepbrid
+				db = Deepbrid()
+				if kind == 'dbt':
+					resolved = db.resolve_cloud_torrent_file(
+						request_id, index, expected_count
+					)
+				elif kind == 'dbu':
+					resolved = db.resolve_cloud_usenet_file(
+						request_id, index, expected_count
+					)
+			except Exception:
+				from resources.lib.modules import log_utils
+				log_utils.error('Deepbrid manual cloud resolve: ')
+
+			if resolved:
+				control.player.play(resolved.replace(' ', '%20'))
+			else:
+				control.notification(
+					title='Deepbrid',
+					message='Cloud file could not be refreshed',
+					icon='ERROR'
+				)
 		elif action == 'db_PlayDownload':
 			if url:
 				control.player.play(url.replace(' ', '%20'))

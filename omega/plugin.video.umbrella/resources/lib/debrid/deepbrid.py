@@ -2298,10 +2298,10 @@ class Deepbrid:
         syshandle,
         count,
         name,
-        direct,
+        stable_token,
         size_text=''
     ):
-        if not direct:
+        if not stable_token:
             return
 
         label = '%02d | [B]FILE[/B]' % count
@@ -2320,8 +2320,8 @@ class Deepbrid:
         )
         listitem.setProperty('IsPlayable', 'true')
         item_url = (
-            'plugin://plugin.video.umbrella/?action=db_PlayDownload&url=%s' %
-            quote_plus(direct)
+            'plugin://plugin.video.umbrella/?action=db_PlayCloud&token=%s' %
+            quote_plus(stable_token)
         )
         control.addItem(
             handle=syshandle,
@@ -2343,9 +2343,10 @@ class Deepbrid:
         if mediatype == 'usenet':
             info = self.usenet_info(folder_id)
             files = info.get('files') or [] if isinstance(info, dict) else []
+            expected_count = len(files)
             count = 0
 
-            for item in files:
+            for index, item in enumerate(files):
                 if not isinstance(item, dict):
                     continue
                 name = item.get('name') or item.get('filename') or ''
@@ -2361,11 +2362,16 @@ class Deepbrid:
                         )
                     except Exception:
                         size_text = str(item.get('size'))
+                stable_token = 'dbu,%s,%s,%s' % (
+                    folder_id,
+                    index,
+                    expected_count
+                )
                 self._add_cloud_file_item(
                     syshandle,
                     count,
                     name or 'Usenet file %s' % count,
-                    direct,
+                    stable_token,
                     size_text=size_text
                 )
 
@@ -2374,41 +2380,31 @@ class Deepbrid:
             if not isinstance(info, dict):
                 info = {}
             links = info.get('links') or []
+            expected_count = len(links)
             probes = self._probe_torrent_link_names(links)
 
             if len(links) == 1 and probes and not probes[0].get('filename'):
                 probes[0]['filename'] = info.get('filename') or 'Torrent file'
 
-            fresh_info = self.torrent_info(folder_id)
-            fresh_links = (
-                fresh_info.get('links') or []
-                if isinstance(fresh_info, dict)
-                else []
-            )
-
-            if len(fresh_links) != len(links):
-                control.notification(
-                    title=self.name,
-                    message='Torrent links changed; reopen this folder',
-                    icon='WARNING'
-                )
-                control.directory(syshandle, cacheToDisc=False)
-                return
-
             count = 0
             for probe in probes:
                 index = probe.get('index')
-                if index is None or index >= len(fresh_links):
+                if index is None or index >= expected_count:
                     continue
                 name = probe.get('filename') or ''
                 if not self._is_video_link('', name):
                     continue
                 count += 1
+                stable_token = 'dbt,%s,%s,%s' % (
+                    folder_id,
+                    index,
+                    expected_count
+                )
                 self._add_cloud_file_item(
                     syshandle,
                     count,
                     name,
-                    fresh_links[index]
+                    stable_token
                 )
 
         control.content(syshandle, 'files')
