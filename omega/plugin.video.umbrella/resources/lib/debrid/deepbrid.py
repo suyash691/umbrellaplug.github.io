@@ -289,7 +289,7 @@ class Deepbrid:
                     log_utils.log(
                         'Deepbrid cloud probe failed: index=%s error=%s' % (
                             futures[future],
-                            str(e)
+                            type(e).__name__
                         ),
                         level=log_utils.LOGWARNING
                     )
