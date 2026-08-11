@@ -933,7 +933,13 @@ class Deepbrid:
 
         return selected
 
-    def _select_torrent_link(self, info):
+    def _select_torrent_link(
+            self,
+            links,
+            title=None,
+            season=None,
+            episode=None
+        ):
         links = info.get('links') or []
 
         if len(links) == 1:
@@ -1107,7 +1113,10 @@ class Deepbrid:
                     )
 
                     link = self._select_torrent_link(
-                        info
+                        links,
+                        title=title,
+                        season=season,
+                        episode=episode
                     )
 
                     if link:
