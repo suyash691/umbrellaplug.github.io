@@ -15,6 +15,7 @@ from resources.lib.modules import (
     control,
     log_utils
 )
+from resources.lib.database import cache
 from urllib.parse import urlparse, unquote
 from resources.lib.modules.source_utils import (
     seas_ep_filter,
@@ -481,57 +482,163 @@ class Deepbrid:
 
         url = BASE_URL + endpoint.lstrip('/')
         request_timeout = self.timeout if timeout is None else timeout
+        method = method.upper()
 
-        try:
-            if method.upper() == 'GET':
-                response = self.session.get(
-                    url,
-                    params=params,
-                    timeout=request_timeout
-                )
-            else:
-                response = self.session.post(
-                    url,
-                    params=params,
-                    data=data,
-                    json=json_data,
-                    files=files,
-                    timeout=request_timeout
-                )
+        # GET requests are safe to retry. Avoid blindly retrying torrent/
+        # Usenet creation POSTs because a timeout or 5xx may happen after
+        # Deepbrid has already accepted the transfer.
+        safe_post = endpoint.lstrip('/') in (
+            'generate/link',
+            'generate/folder'
+        )
+        retry_transient = method == 'GET' or safe_post
+        max_attempts = 3
 
-            if response.status_code == 401:
-                if not silent:
-                    control.notification(
-                        title=self.name,
-                        message='Invalid or expired API key',
-                        icon='ERROR'
+        for attempt in range(max_attempts):
+            response = None
+
+            try:
+                if method == 'GET':
+                    response = self.session.get(
+                        url,
+                        params=params,
+                        timeout=request_timeout
                     )
-                return {}
+                else:
+                    response = self.session.post(
+                        url,
+                        params=params,
+                        data=data,
+                        json=json_data,
+                        files=files,
+                        timeout=request_timeout
+                    )
 
-            response.raise_for_status()
+                status = response.status_code
 
-            result = response.json()
+                if status == 401:
+                    if not silent:
+                        control.notification(
+                            title=self.name,
+                            message='Invalid or expired API key',
+                            icon='ERROR'
+                        )
+                    return {
+                        'error': 401,
+                        'message': 'Invalid or expired API key'
+                    }
 
-            if isinstance(result, dict):
-                error = result.get('error')
+                if status == 429 and attempt + 1 < max_attempts:
+                    try:
+                        retry_after = float(
+                            response.headers.get('Retry-After') or 1
+                        )
+                    except Exception:
+                        retry_after = 1.0
 
-                if error not in (None, 0, '0', False):
+                    retry_after = max(0.5, min(retry_after, 10.0))
+                    if not silent:
+                        log_utils.log(
+                            'Deepbrid rate limited; retrying in %.1fs' %
+                            retry_after,
+                            level=log_utils.LOGWARNING
+                        )
+                    time.sleep(retry_after)
+                    continue
+
+                if (
+                    retry_transient
+                    and status in (500, 502, 503, 504)
+                    and attempt + 1 < max_attempts
+                ):
+                    delay = min(1.0 * (2 ** attempt), 4.0)
+                    if not silent:
+                        log_utils.log(
+                            'Deepbrid HTTP %s; retrying in %.1fs' % (
+                                status,
+                                delay
+                            ),
+                            level=log_utils.LOGWARNING
+                        )
+                    time.sleep(delay)
+                    continue
+
+                try:
+                    result = response.json()
+                except Exception:
+                    result = {}
+
+                if status >= 400:
+                    if not isinstance(result, dict):
+                        result = {}
+
+                    result = dict(result)
+                    result.setdefault('error', status)
+                    result.setdefault(
+                        'message',
+                        response.reason or 'HTTP %s' % status
+                    )
+
                     if not silent:
                         log_utils.log(
                             'Deepbrid API error: %s' % result,
                             level=log_utils.LOGWARNING
                         )
-                    return {}
+                    return result
 
-            return result
+                if isinstance(result, dict):
+                    error = result.get('error')
 
-        except Exception as e:
-            if not silent:
-                log_utils.log(
-                    'Deepbrid request error: %s' % str(e),
-                    level=log_utils.LOGERROR
-                )
-            return {}
+                    if error not in (None, 0, '0', False):
+                        if not silent:
+                            log_utils.log(
+                                'Deepbrid API error: %s' % result,
+                                level=log_utils.LOGWARNING
+                            )
+                        return result
+
+                return result
+
+            except (requests.exceptions.Timeout,
+                    requests.exceptions.ConnectionError) as e:
+                if retry_transient and attempt + 1 < max_attempts:
+                    delay = min(1.0 * (2 ** attempt), 4.0)
+                    if not silent:
+                        log_utils.log(
+                            'Deepbrid request failed; retrying in %.1fs: %s' % (
+                                delay,
+                                str(e)
+                            ),
+                            level=log_utils.LOGWARNING
+                        )
+                    time.sleep(delay)
+                    continue
+
+                if not silent:
+                    log_utils.log(
+                        'Deepbrid request error: %s' % str(e),
+                        level=log_utils.LOGERROR
+                    )
+                return {
+                    'error': 'request_failed',
+                    'message': str(e)
+                }
+
+            except Exception as e:
+                if not silent:
+                    log_utils.log(
+                        'Deepbrid request error: %s' % str(e),
+                        level=log_utils.LOGERROR
+                    )
+                return {
+                    'error': 'request_failed',
+                    'message': str(e)
+                }
+
+        return {
+            'error': 'request_failed',
+            'message': 'Deepbrid request failed'
+        }
 
     def _get(self, endpoint, params=None, silent=False, timeout=None):
         return self._request(
@@ -681,58 +788,68 @@ class Deepbrid:
 
         return result if returnAll else direct
 
+    def _fetch_hosts(self):
+        result = self._get(
+            'hosts',
+            silent=True
+        )
+
+        hosts = []
+
+        if isinstance(result, list):
+            for item in result:
+                if isinstance(item, dict):
+                    for domain, status in item.items():
+                        if not domain:
+                            continue
+
+                        if (
+                            status
+                            and str(status).lower().startswith('down')
+                        ):
+                            continue
+
+                        hosts.append(str(domain).lower())
+
+        elif isinstance(result, dict) and not result.get('error'):
+            data = (
+                result.get('hosts') or
+                result.get('data') or
+                []
+            )
+
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        for domain, status in item.items():
+                            if not domain:
+                                continue
+
+                            if (
+                                status
+                                and str(status).lower().startswith('down')
+                            ):
+                                continue
+
+                            hosts.append(str(domain).lower())
+
+        return list(set(hosts))
+
     def get_hosts(self):
         hosts_dict = {
             'Deepbrid': []
         }
 
         try:
-            # /hosts is public and returns:
-            # [
-            #   {"rapidgator.net": "up"},
-            #   {"turbobit.net": "up"}
-            # ]
+            # Deepbrid exposes live host status, so use a shorter cache than
+            # Umbrella's 168-hour RD/PM host cache while still avoiding one
+            # /hosts request per candidate host during every scrape.
+            hosts = cache.get(
+                self._fetch_hosts,
+                6
+            ) or []
 
-            result = self._get(
-                'hosts',
-                silent=True
-            )
-
-            hosts = []
-
-            if isinstance(result, list):
-                for item in result:
-                    if isinstance(item, dict):
-                        for domain, status in item.items():
-                            if domain:
-                                # Do not advertise hosts that are
-                                # explicitly down.
-                                if status and str(status).lower().startswith('down'):
-                                    continue
-
-                                hosts.append(
-                                    str(domain).lower()
-                                )
-
-            elif isinstance(result, dict):
-                # Be tolerant of a wrapped API response.
-                data = (
-                    result.get('hosts') or
-                    result.get('data') or
-                    []
-                )
-
-                if isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict):
-                            for domain in item:
-                                hosts.append(
-                                    str(domain).lower()
-                                )
-
-            hosts_dict['Deepbrid'] = list(
-                set(hosts)
-            )
+            hosts_dict['Deepbrid'] = hosts
 
         except:
             log_utils.error()
@@ -804,9 +921,31 @@ class Deepbrid:
             else:
                 return None
 
-        # Snapshot current IDs so we can identify a newly-created torrent
-        # if Deepbrid returns error=0 but id=None.
+        # Snapshot current torrents both for safe pre-add reuse and so we
+        # can identify a newly-created torrent when Deepbrid returns
+        # error=0/id=None. /torrents/info does not expose the info hash, so
+        # only reuse a unique exact display-name match; never fuzzy-match.
         before = self._torrent_list()
+        expected_name = self._magnet_display_name(magnet)
+
+        if expected_name:
+            existing_matches = [
+                item for item in before
+                if str(item.get('filename', '')).strip() == expected_name
+            ]
+
+            if len(existing_matches) == 1:
+                existing_id = str(existing_matches[0]['id'])
+                log_utils.log(
+                    'Deepbrid reusing existing torrent before add: '
+                    'id=%s filename=%s' % (
+                        existing_id,
+                        expected_name
+                    ),
+                    level=log_utils.LOGDEBUG
+                )
+                return existing_id
+
         before_ids = {
             str(item.get('id'))
             for item in before
@@ -843,8 +982,6 @@ class Deepbrid:
 
         # Deepbrid sometimes returns error=0/id=None for a torrent
         # that already exists (or was added without its ID being returned).
-        expected_name = self._magnet_display_name(magnet)
-
         for attempt in range(3):
             if attempt:
                 time.sleep(1)
