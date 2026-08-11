@@ -580,6 +580,7 @@ class Deepbrid:
             info.get('type')
         ):
             control.setSetting('deepbrid.token', key)
+            control.setSetting('deepbrid.enable', 'true')
 
             control.notification(
                 title=self.name,
@@ -605,6 +606,10 @@ class Deepbrid:
         control.setSetting(
             'deepbrid.token',
             ''
+        )
+        control.setSetting(
+            'deepbrid.enable',
+            'false'
         )
 
         control.notification(
@@ -986,16 +991,44 @@ class Deepbrid:
         links = info.get('links') or []
 
         if len(links) == 1:
-            log_utils.log(
-                'Deepbrid returning single-file torrent: '
-                'id=%s filename=%s link=%s' % (
-                    info.get('id'),
-                    info.get('filename'),
-                    links[0]
-                ),
-                level=log_utils.LOGDEBUG
+            probe = self._probe_torrent_link(
+                links[0],
+                0
             )
-            return links[0]
+
+            if not probe or not self._is_video_probe(probe):
+                log_utils.log(
+                    'Deepbrid single-file torrent is not a video: %s' %
+                    repr(probe),
+                    level=log_utils.LOGWARNING
+                )
+                return None
+
+            fresh_info = self.torrent_info(
+                info.get('id')
+            )
+
+            if not isinstance(fresh_info, dict):
+                return None
+
+            fresh_links = fresh_info.get('links') or []
+
+            if len(fresh_links) == 1:
+                log_utils.log(
+                    'Deepbrid returning refreshed single video file: '
+                    'id=%s filename=%s' % (
+                        info.get('id'),
+                        probe.get('filename')
+                    ),
+                    level=log_utils.LOGDEBUG
+                )
+                return fresh_links[0]
+
+            log_utils.log(
+                'Deepbrid could not safely refresh single-file torrent',
+                level=log_utils.LOGWARNING
+            )
+            return None
 
         if len(links) > 1:
             is_episode = (
