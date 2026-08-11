@@ -1,0 +1,309 @@
+from pathlib import Path
+
+DEEPBRID = Path('omega/plugin.video.umbrella/resources/lib/debrid/deepbrid.py')
+NAVIGATOR = Path('omega/plugin.video.umbrella/resources/lib/menus/navigator.py')
+ROUTER = Path('omega/plugin.video.umbrella/resources/lib/modules/router.py')
+
+deepbrid = DEEPBRID.read_text(encoding='utf-8')
+navigator = NAVIGATOR.read_text(encoding='utf-8')
+router = ROUTER.read_text(encoding='utf-8')
+
+
+def replace_once(text, old, new, name):
+    count = text.count(old)
+    if count != 1:
+        raise RuntimeError('%s matched %s times' % (name, count))
+    return text.replace(old, new, 1)
+
+
+deepbrid = replace_once(
+    deepbrid,
+    "import requests\n\nfrom resources.lib.modules import (",
+    "import requests\n\nfrom sys import argv\nfrom resources.lib.modules import (",
+    'deepbrid argv import'
+)
+
+deepbrid = replace_once(
+    deepbrid,
+    "from urllib.parse import urlparse, unquote\n",
+    "from urllib.parse import urlparse, unquote, quote_plus\n",
+    'deepbrid quote_plus import'
+)
+
+deepbrid = replace_once(
+    deepbrid,
+    "VIDEO_EXTENSIONS = (\n    '.mkv', '.mp4', '.avi', '.mov', '.m4v',\n    '.ts', '.wmv', '.mpg', '.mpeg', '.webm'\n)\n\n\nclass Deepbrid:",
+    "VIDEO_EXTENSIONS = (\n    '.mkv', '.mp4', '.avi', '.mov', '.m4v',\n    '.ts', '.wmv', '.mpg', '.mpeg', '.webm'\n)\n\ndeepbrid_icon = control.joinPath(control.artPath(), 'deepbrid.png')\nif not control.existsPath(deepbrid_icon):\n    deepbrid_icon = control.addonIcon()\n\naddon_fanart = control.addonFanart()\n\n\nclass Deepbrid:",
+    'deepbrid artwork globals'
+)
+
+start = deepbrid.index('    def account_info_to_dialog(self):\n')
+end = deepbrid.index('    # -------------------------------------------------\n    # Hoster support\n', start)
+replacement = '''    def account_stats(self):
+        if not self.api_key:
+            return {}
+
+        return self._get('user/stats')
+
+    def account_limits(self):
+        if not self.api_key:
+            return {}
+
+        return self._get('user/limits')
+
+    def account_info_to_dialog(self):
+        from datetime import datetime
+
+        info = self.account_info()
+        if not isinstance(info, dict) or info.get('error'):
+            return control.notification(
+                title=self.name,
+                message='Could not get account info',
+                icon='ERROR'
+            )
+
+        stats = self.account_stats()
+        if not isinstance(stats, dict) or stats.get('error'):
+            stats = {}
+
+        lines = []
+        if info.get('username'):
+            lines.append('Username: %s' % info.get('username'))
+        if info.get('email'):
+            lines.append('Email: %s' % info.get('email'))
+        if info.get('type'):
+            lines.append('Account Type: %s' % str(info.get('type')).capitalize())
+
+        expiration = info.get('expiration')
+        if expiration:
+            expiration_text = str(expiration)
+            lines.append('Expiration: %s' % expiration_text)
+            try:
+                expires = datetime.strptime(expiration_text[:10], '%Y-%m-%d').date()
+                days_remaining = (expires - datetime.now().date()).days
+                lines.append('Days Remaining: %s' % days_remaining)
+            except Exception:
+                pass
+
+        if info.get('fidelity_points') is not None:
+            lines.append('Fidelity Points: %s' % info.get('fidelity_points'))
+        if info.get('maxDownloads') is not None:
+            lines.append('Max Downloads: %s' % info.get('maxDownloads'))
+        if info.get('maxConnections') is not None:
+            lines.append('Max Connections: %s' % info.get('maxConnections'))
+        if stats.get('downloads') is not None:
+            lines.append('Downloads: %s' % stats.get('downloads'))
+        if stats.get('bandwidth'):
+            lines.append('Bandwidth Used: %s' % stats.get('bandwidth'))
+        if stats.get('torrents') is not None:
+            lines.append('Torrents: %s' % stats.get('torrents'))
+        if stats.get('remote') is not None:
+            lines.append('Remote Uploads: %s' % stats.get('remote'))
+
+        if not lines:
+            lines.append(str(info))
+
+        return control.selectDialog(lines, heading='Deepbrid Account Info')
+
+    def account_limits_to_dialog(self):
+        limits = self.account_limits()
+        if not isinstance(limits, dict) or limits.get('error'):
+            return control.notification(
+                title=self.name,
+                message='Could not get hoster limits',
+                icon='ERROR'
+            )
+
+        hosters = limits.get('hosters') or []
+        lines = []
+        reset = limits.get('reset')
+        if reset:
+            lines.append('[B]Reset: %s[/B]' % str(reset).capitalize())
+
+        for item in hosters:
+            if not isinstance(item, dict):
+                continue
+            domain = item.get('domain') or 'Unknown host'
+            if item.get('type') == 'bandwidth':
+                used = item.get('used_str') or str(item.get('used', 0))
+                limit = item.get('limit_str') or str(item.get('limit', 0))
+                remaining = item.get('remaining_str') or str(item.get('remaining', 0))
+                lines.append('%s: %s / %s (remaining %s)' % (domain, used, limit, remaining))
+            else:
+                lines.append('%s: %s / %s links (remaining %s)' % (
+                    domain,
+                    item.get('used', 0),
+                    item.get('limit', 0),
+                    item.get('remaining', 0)
+                ))
+
+        if not lines:
+            lines.append('No per-hoster limits reported')
+        return control.selectDialog(lines, heading='Deepbrid Hoster Limits')
+
+    def download_history(self, limit=100, offset=0):
+        if not self.api_key:
+            return {}
+        try:
+            limit = max(1, min(int(limit), 500))
+        except Exception:
+            limit = 100
+        try:
+            offset = max(0, int(offset))
+        except Exception:
+            offset = 0
+
+        result = self._get('downloads', params={'limit': limit, 'offset': offset})
+        if not isinstance(result, dict) or result.get('error'):
+            return {}
+        return result
+
+    def download_history_to_listitem(self, offset=0, limit=100):
+        try:
+            offset = max(0, int(offset))
+        except Exception:
+            offset = 0
+        try:
+            limit = max(1, min(int(limit), 500))
+        except Exception:
+            limit = 100
+        try:
+            syshandle = int(argv[1])
+        except Exception:
+            return
+
+        result = self.download_history(limit=limit, offset=offset)
+        if not result:
+            control.notification(
+                title=self.name,
+                message='Could not get download history',
+                icon='ERROR'
+            )
+            control.directory(syshandle, cacheToDisc=False)
+            return
+
+        items = result.get('data') or []
+        total = result.get('count')
+        try:
+            total = int(total)
+        except Exception:
+            total = offset + len(items)
+
+        sysaddon = 'plugin://plugin.video.umbrella/'
+        for index, item in enumerate(items, offset + 1):
+            if not isinstance(item, dict):
+                continue
+            filename = item.get('filename') or 'Unknown file'
+            size = item.get('size') or 'Unknown size'
+            date = item.get('date') or ''
+            original = item.get('original') or ''
+            direct = item.get('download') or ''
+
+            label = '%03d | [B]%s[/B] | %s' % (index, filename, size)
+            if date:
+                label += ' | %s' % date
+
+            listitem = control.item(label=label, offscreen=True)
+            listitem.setArt({
+                'icon': deepbrid_icon,
+                'poster': deepbrid_icon,
+                'thumb': deepbrid_icon,
+                'fanart': addon_fanart,
+                'banner': deepbrid_icon
+            })
+            plot = 'Size: %s' % size
+            if date:
+                plot += '[CR]Date: %s' % date
+            if original:
+                plot += '[CR]Original: %s' % original
+            control.set_info(listitem, {'title': filename, 'plot': plot})
+
+            if direct:
+                listitem.setProperty('IsPlayable', 'true')
+                item_url = '%s?action=db_PlayDownload&url=%s' % (sysaddon, quote_plus(direct))
+            else:
+                item_url = ''
+
+            control.addItem(
+                handle=syshandle,
+                url=item_url,
+                listitem=listitem,
+                isFolder=False
+            )
+
+        next_offset = offset + len(items)
+        if items and next_offset < total:
+            label = '[B]Next Page[/B] (%s-%s of %s)' % (
+                next_offset + 1,
+                min(next_offset + limit, total),
+                total
+            )
+            listitem = control.item(label=label, offscreen=True)
+            listitem.setArt({
+                'icon': deepbrid_icon,
+                'poster': deepbrid_icon,
+                'thumb': deepbrid_icon,
+                'fanart': addon_fanart,
+                'banner': deepbrid_icon
+            })
+            control.set_info(listitem, {'title': label})
+            control.addItem(
+                handle=syshandle,
+                url='%s?action=db_DownloadHistory&offset=%s' % (sysaddon, next_offset),
+                listitem=listitem,
+                isFolder=True
+            )
+
+        control.content(syshandle, 'files')
+        control.directory(syshandle, cacheToDisc=False)
+
+'''
+deepbrid = deepbrid[:start] + replacement + deepbrid[end:]
+
+navigator = replace_once(
+    navigator,
+    "\t\tself.torboxCredentials = getSetting('torboxtoken') != ''\n\t\tself.premiumizeCredentials = getSetting('premiumizetoken') != ''\n",
+    "\t\tself.torboxCredentials = getSetting('torboxtoken') != ''\n\t\tself.deepbridCredentials = getSetting('deepbrid.token') != ''\n\t\tself.premiumizeCredentials = getSetting('premiumizetoken') != ''\n",
+    'navigator credentials'
+)
+
+navigator = replace_once(
+    navigator,
+    "\t\tif self.torboxCredentials:     self.addDirectoryItem(40529, 'tb_ServiceNavigator&folderName=%s' % quote_plus(getLS(35539)), 'torbox.png', 'torbox.png')\n\t\tself.endDirectory()\n",
+    "\t\tif self.torboxCredentials:     self.addDirectoryItem(40529, 'tb_ServiceNavigator&folderName=%s' % quote_plus(getLS(35539)), 'torbox.png', 'torbox.png')\n\t\tif self.deepbridCredentials:   self.addDirectoryItem('Deepbrid', 'db_ServiceNavigator&folderName=%s' % quote_plus('Deepbrid'), 'tools.png', 'DefaultAddonService.png')\n\t\tself.endDirectory()\n",
+    'premium services Deepbrid item'
+)
+
+marker = "\tdef premiumize_service(self, folderName=''):\n"
+if navigator.count(marker) != 1:
+    raise RuntimeError('premiumize service marker mismatch')
+deepbrid_service = '''\tdef deepbrid_service(self, folderName=''):
+\t\tif self.useContainerTitles: control.setContainerName(folderName)
+\t\tif getSetting('deepbrid.token'):
+\t\t\tself.addDirectoryItem('Deepbrid: Download History', 'db_DownloadHistory&offset=0', 'tools.png', 'DefaultAddonService.png')
+\t\t\tself.addDirectoryItem('Deepbrid: Hoster Limits', 'db_AccountLimits', 'tools.png', 'DefaultAddonService.png', isFolder=False)
+\t\t\tself.addDirectoryItem('Deepbrid: Account Info', 'db_AccountInfo', 'tools.png', 'DefaultAddonService.png', isFolder=False)
+\t\telse:
+\t\t\tself.addDirectoryItem('[I]Please setup in Accounts[/I]', 'tools_openSettings&query=6.0', 'tools.png', 'DefaultAddonService.png', isFolder=False)
+\t\tself.endDirectory()
+
+'''
+navigator = navigator.replace(marker, deepbrid_service + marker, 1)
+
+router = replace_once(
+    router,
+    "\telif action and action.startswith('db_'):\n\t\tif action == 'db_Authorize':\n",
+    "\telif action and action.startswith('db_'):\n\t\tif action == 'db_ServiceNavigator':\n\t\t\tfrom resources.lib.menus import navigator\n\t\t\tnavigator.Navigator().deepbrid_service(folderName=folderName)\n\t\telif action == 'db_Authorize':\n",
+    'router Deepbrid service navigator'
+)
+
+router = replace_once(
+    router,
+    "\t\telif action == 'db_AccountInfo':\n\t\t\tfrom resources.lib.debrid.deepbrid import Deepbrid\n\t\t\tDeepbrid().account_info_to_dialog()\n",
+    "\t\telif action == 'db_AccountInfo':\n\t\t\tfrom resources.lib.debrid.deepbrid import Deepbrid\n\t\t\tDeepbrid().account_info_to_dialog()\n\t\telif action == 'db_AccountLimits':\n\t\t\tfrom resources.lib.debrid.deepbrid import Deepbrid\n\t\t\tDeepbrid().account_limits_to_dialog()\n\t\telif action == 'db_DownloadHistory':\n\t\t\tfrom resources.lib.debrid.deepbrid import Deepbrid\n\t\t\tDeepbrid().download_history_to_listitem(offset=params.get('offset', '0'))\n\t\telif action == 'db_PlayDownload':\n\t\t\tif url:\n\t\t\t\tcontrol.player.play(url.replace(' ', '%20'))\n",
+    'router Deepbrid account/history actions'
+)
+
+DEEPBRID.write_text(deepbrid, encoding='utf-8')
+NAVIGATOR.write_text(navigator, encoding='utf-8')
+ROUTER.write_text(router, encoding='utf-8')
