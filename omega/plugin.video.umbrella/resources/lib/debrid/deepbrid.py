@@ -20,7 +20,8 @@ from resources.lib.database import cache
 from urllib.parse import urlparse, unquote, quote_plus
 from resources.lib.modules.source_utils import (
     seas_ep_filter,
-    extras_filter
+    extras_filter,
+    supported_video_extensions
 )
 from concurrent.futures import (
     ThreadPoolExecutor,
@@ -30,10 +31,7 @@ from concurrent.futures import (
 BASE_URL = 'https://www.deepbrid.com/api/v1/'
 USER_AGENT = 'Umbrella-Deepbrid/1.3'
 
-VIDEO_EXTENSIONS = (
-    '.mkv', '.mp4', '.avi', '.mov', '.m4v',
-    '.ts', '.m2ts', '.wmv', '.mpg', '.mpeg', '.webm'
-)
+VIDEO_EXTENSIONS = tuple(supported_video_extensions())
 
 deepbrid_icon = control.joinPath(control.artPath(), 'deepbrid.png')
 if not control.existsPath(deepbrid_icon):
@@ -80,58 +78,53 @@ class Deepbrid:
     def torrent_list(self):
         return self._torrent_list()
 
-    def _probe_torrent_links(self, links):
+    def _probe_torrent_links(self, links, indexes=None):
         if not links:
+            return []
+
+        if indexes is None:
+            indexed_links = list(enumerate(links))
+        else:
+            indexed_links = [
+                (int(index), link)
+                for index, link in zip(indexes, links)
+            ]
+
+        if not indexed_links:
             return []
 
         results = []
 
-        #
-        # Keep concurrency conservative. Deepbrid / myfast.link
-        # can already be slow, so don't fire 20+ requests at once.
-        #
-        workers = min(4, len(links))
+        # Keep concurrency conservative. These requests follow the file-host
+        # redirect and can be substantially slower than filename-only probes.
+        workers = min(4, len(indexed_links))
 
-        with ThreadPoolExecutor(
-            max_workers=workers
-        ) as executor:
-
+        with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
                 executor.submit(
                     self._probe_torrent_link,
                     link,
                     index
                 ): index
-                for index, link in enumerate(links)
+                for index, link in indexed_links
             }
 
             for future in as_completed(futures):
                 index = futures[future]
-
                 try:
                     result = future.result()
-
                     if result:
                         results.append(result)
-
                 except Exception as e:
                     log_utils.log(
-                        'Deepbrid probe worker failed: '
-                        'index=%s error=%s' % (
+                        'Deepbrid probe worker failed: index=%s error=%s' % (
                             index,
-                            str(e)
+                            type(e).__name__
                         ),
                         level=log_utils.LOGWARNING
                     )
 
-        #
-        # Restore Deepbrid's original file order after
-        # concurrent probing.
-        #
-        results.sort(
-            key=lambda item: item.get('index', 0)
-        )
-
+        results.sort(key=lambda item: item.get('index', 0))
         return results
 
     def _probe_torrent_link(self, link, index):
@@ -150,7 +143,6 @@ class Deepbrid:
             )
 
             filename = self._filename_from_headers(response)
-
             content_type = (
                 response.headers.get('Content-Type', '')
                 .split(';', 1)[0]
@@ -159,67 +151,48 @@ class Deepbrid:
             )
 
             size = 0
-
-            # Prefer total size from:
-            # Content-Range: bytes 0-0/123456789
-            content_range = response.headers.get(
-                'Content-Range', ''
-            )
-
+            content_range = response.headers.get('Content-Range', '')
             if '/' in content_range:
                 try:
-                    size = int(
-                        content_range.rsplit('/', 1)[1]
-                    )
+                    size = int(content_range.rsplit('/', 1)[1])
                 except Exception:
                     pass
 
             if not size:
                 try:
-                    size = int(
-                        response.headers.get(
-                            'Content-Length'
-                        ) or 0
-                    )
+                    size = int(response.headers.get('Content-Length') or 0)
                 except Exception:
                     pass
 
-            history = [
-                {
-                    'status': r.status_code,
-                    'url': r.url,
-                    'location': r.headers.get('Location')
-                }
-                for r in response.history
-            ]
-
+            # Do not retain or log Deepbrid/CDN one-time URLs. Callers only
+            # need stable selection metadata from a probe.
             result = {
                 'index': index,
                 'filename': filename,
                 'content_type': content_type,
                 'size': size,
-                'status': response.status_code,
-                'final_url': response.url,
-                'history': history
+                'status': response.status_code
             }
 
             log_utils.log(
-                'Deepbrid file probe: %s' % repr(result),
+                'Deepbrid file probe: index=%s status=%s filename=%s size=%s' % (
+                    index,
+                    response.status_code,
+                    filename,
+                    size
+                ),
                 level=log_utils.LOGDEBUG
             )
-
             return result
 
         except Exception as e:
             log_utils.log(
-                'Deepbrid file probe failed: '
-                'index=%s error=%s' % (
+                'Deepbrid file probe failed: index=%s error=%s' % (
                     index,
-                    str(e)
+                    type(e).__name__
                 ),
                 level=log_utils.LOGWARNING
             )
-
             return None
 
         finally:
@@ -233,9 +206,8 @@ class Deepbrid:
         response = None
 
         try:
-            # For TV packs we only need the filename. Deepbrid's short URL
-            # redirects to a path containing the real filename, so do not
-            # follow the redirect or wait for the file host to respond.
+            # Filename-only probe: never follow the one-time redirect to the
+            # file host. The redirect path is enough to recover the filename.
             response = requests.get(
                 link,
                 headers={
@@ -249,36 +221,36 @@ class Deepbrid:
 
             location = response.headers.get('Location') or ''
             filename = None
-
             if location:
                 try:
-                    path = unquote(
-                        urlparse(location).path
-                    )
+                    path = unquote(urlparse(location).path)
                     filename = os.path.basename(path)
                 except Exception:
                     pass
 
+            # Keep the redirect URL local only. It is one-time data and should
+            # never enter probe dictionaries or debug logs.
             result = {
                 'index': index,
                 'filename': filename,
-                'status': response.status_code,
-                'location': location
+                'status': response.status_code
             }
 
             log_utils.log(
-                'Deepbrid fast file probe: %s' % repr(result),
+                'Deepbrid fast file probe: index=%s status=%s filename=%s' % (
+                    index,
+                    response.status_code,
+                    filename
+                ),
                 level=log_utils.LOGDEBUG
             )
-
             return result
 
         except Exception as e:
             log_utils.log(
-                'Deepbrid fast probe failed: '
-                'index=%s error=%s' % (
+                'Deepbrid fast probe failed: index=%s error=%s' % (
                     index,
-                    str(e)
+                    type(e).__name__
                 ),
                 level=log_utils.LOGWARNING
             )
@@ -440,7 +412,8 @@ class Deepbrid:
             return None
 
         # Probe small batches and stop as soon as the requested episode is
-        # found. This avoids probing an entire full-series pack before play.
+        # found. A failed/no-filename short-link probe gets one fast retry,
+        # but only when the first pass did not already find the episode.
         batch_size = 8
 
         for start in range(0, len(links), batch_size):
@@ -450,48 +423,85 @@ class Deepbrid:
                     start=start
                 )
             )
-
-            matches = []
+            results = {}
 
             with ThreadPoolExecutor(
                 max_workers=min(batch_size, len(batch))
             ) as executor:
-                futures = [
+                futures = {
                     executor.submit(
                         self._probe_torrent_link_name,
                         link,
                         index
-                    )
+                    ): index
                     for index, link in batch
-                ]
+                }
 
                 for future in as_completed(futures):
+                    index = futures[future]
                     try:
                         item = future.result()
                     except Exception:
-                        continue
+                        item = None
+                    if item:
+                        results[index] = item
 
-                    if not item:
-                        continue
+            matches = [
+                item for item in results.values()
+                if item.get('filename')
+                and seas_ep_filter(
+                    season,
+                    episode,
+                    item.get('filename')
+                )
+            ]
 
-                    filename = item.get('filename') or ''
+            if not matches:
+                retry_items = [
+                    (index, link)
+                    for index, link in batch
+                    if not (results.get(index) or {}).get('filename')
+                ]
 
-                    if (
-                        filename
+                if retry_items:
+                    log_utils.log(
+                        'Deepbrid retrying fast filename probes: indexes=%s' %
+                        [item[0] for item in retry_items],
+                        level=log_utils.LOGDEBUG
+                    )
+                    with ThreadPoolExecutor(
+                        max_workers=min(4, len(retry_items))
+                    ) as executor:
+                        futures = {
+                            executor.submit(
+                                self._probe_torrent_link_name,
+                                link,
+                                index
+                            ): index
+                            for index, link in retry_items
+                        }
+                        for future in as_completed(futures):
+                            index = futures[future]
+                            try:
+                                item = future.result()
+                            except Exception:
+                                item = None
+                            if item:
+                                results[index] = item
+
+                    matches = [
+                        item for item in results.values()
+                        if item.get('filename')
                         and seas_ep_filter(
                             season,
                             episode,
-                            filename
+                            item.get('filename')
                         )
-                    ):
-                        matches.append(item)
+                    ]
 
             if matches:
-                matches.sort(
-                    key=lambda item: item.get('index', 0)
-                )
+                matches.sort(key=lambda item: item.get('index', 0))
                 selected = matches[0]
-
                 log_utils.log(
                     'Deepbrid episode fast match: '
                     'S%sE%s index=%s filename=%s' % (
@@ -502,7 +512,6 @@ class Deepbrid:
                     ),
                     level=log_utils.LOGDEBUG
                 )
-
                 return selected
 
         log_utils.log(
@@ -512,57 +521,94 @@ class Deepbrid:
             ),
             level=log_utils.LOGWARNING
         )
-
         return None
 
-    def _is_video_probe(self, item):
-        filename = (
-            item.get('filename') or ''
-        ).lower()
+    def _find_movie_file(self, links, title=None):
+        if not links:
+            return None
 
-        content_type = (
-            item.get('content_type') or ''
-        ).lower()
+        # First recover filenames without following Deepbrid's one-time short
+        # URLs. This cheaply removes samples/extras/non-video files. Any entry
+        # whose filename could not be recovered remains eligible for the old
+        # full Range probe so this optimization cannot hide a valid movie.
+        name_probes = self._probe_torrent_link_names(links)
+        by_index = {
+            item.get('index'): item
+            for item in name_probes
+            if isinstance(item, dict) and item.get('index') is not None
+        }
 
-        video_extensions = (
-            '.mkv',
-            '.mp4',
-            '.m4v',
-            '.avi',
-            '.mov',
-            '.webm',
-            '.ts',
-            '.m2ts',
-            '.mpg',
-            '.mpeg',
-            '.wmv'
+        title_lower = (title or '').lower()
+        extras = tuple(
+            extra for extra in extras_filter()
+            if extra not in title_lower
         )
 
+        candidates = []
+        unknown = []
+        for index in range(len(links)):
+            filename = (by_index.get(index) or {}).get('filename') or ''
+            if not filename:
+                unknown.append(index)
+                continue
+
+            lower_name = filename.lower()
+            if not lower_name.endswith(VIDEO_EXTENSIONS):
+                continue
+            if any(extra in lower_name for extra in extras):
+                continue
+            candidates.append(index)
+
+        if len(candidates) == 1 and not unknown:
+            selected = dict(by_index[candidates[0]])
+            selected.setdefault('content_type', '')
+            selected.setdefault('size', 0)
+            log_utils.log(
+                'Deepbrid movie fast match: index=%s filename=%s' % (
+                    selected.get('index'),
+                    selected.get('filename')
+                ),
+                level=log_utils.LOGDEBUG
+            )
+            return selected
+
+        probe_indexes = sorted(set(candidates + unknown))
+        if not probe_indexes:
+            # Preserve the known-working fallback for unusual files whose
+            # extensions do not reveal that they are video.
+            probe_indexes = list(range(len(links)))
+
+        log_utils.log(
+            'Deepbrid movie full-probe candidates: %s of %s' % (
+                len(probe_indexes),
+                len(links)
+            ),
+            level=log_utils.LOGDEBUG
+        )
+
+        probes = self._probe_torrent_links(
+            [links[index] for index in probe_indexes],
+            indexes=probe_indexes
+        )
+        return self._select_probed_file(probes, title=title)
+
+    def _is_video_probe(self, item):
+        filename = (item.get('filename') or '').lower()
+        content_type = (item.get('content_type') or '').lower()
+
         audio_extensions = (
-            '.eac3',
-            '.ac3',
-            '.dts',
-            '.aac',
-            '.flac',
-            '.mp3',
-            '.m4a',
-            '.wav',
-            '.ogg',
-            '.opus'
+            '.eac3', '.ac3', '.dts', '.aac', '.flac',
+            '.mp3', '.m4a', '.wav', '.ogg', '.opus'
         )
 
         if filename.endswith(audio_extensions):
             return False
-
-        if filename.endswith(video_extensions):
+        if filename.endswith(VIDEO_EXTENSIONS):
             return True
-
         if content_type.startswith('video/'):
             return True
-
         if content_type.startswith('audio/'):
             return False
-
         return False
 
     def _filename_from_headers(self, response):
@@ -1521,13 +1567,8 @@ class Deepbrid:
                     episode
                 )
             else:
-                # Keep the known-working movie path unchanged.
-                probes = self._probe_torrent_links(
-                    links
-                )
-
-                selected = self._select_probed_file(
-                    probes,
+                selected = self._find_movie_file(
+                    links,
                     title=title
                 )
 
@@ -1951,7 +1992,10 @@ class Deepbrid:
             selected = pool[0]
 
         log_utils.log(
-            'Deepbrid Usenet selected file: %s' % repr(selected),
+            'Deepbrid Usenet selected file: name=%s size=%s' % (
+                selected.get('name'),
+                selected.get('size')
+            ),
             level=log_utils.LOGDEBUG
         )
         return selected
