@@ -1,0 +1,55 @@
+name: Deepbrid manual cloud stable playback
+on:
+  push:
+    branches:
+      - agent/deepbrid-manual-cloud-stable-playback
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply patch
+        run: python .github/scripts/patch_deepbrid_manual_cloud_stable.py
+      - name: Validate Python
+        run: |
+          python -m py_compile omega/plugin.video.umbrella/resources/lib/debrid/deepbrid.py
+          python -m py_compile omega/plugin.video.umbrella/resources/lib/modules/router.py
+      - name: Validate stable-token playback wiring
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          deep = Path('omega/plugin.video.umbrella/resources/lib/debrid/deepbrid.py').read_text(encoding='utf-8')
+          router = Path('omega/plugin.video.umbrella/resources/lib/modules/router.py').read_text(encoding='utf-8')
+          start = deep.index('    def _add_cloud_file_item(')
+          end = deep.index('    # -------------------------------------------------\n    # Delete operations', start)
+          cloud = deep[start:end]
+          assert 'action=db_PlayCloud&token=%s' in cloud
+          assert "stable_token = 'dbt,%s,%s,%s'" in cloud
+          assert "stable_token = 'dbu,%s,%s,%s'" in cloud
+          assert 'fresh_info = self.torrent_info(folder_id)' not in cloud
+          assert 'fresh_links[index]' not in cloud
+          assert 'action=db_PlayDownload&url=%s' not in cloud
+          assert "elif action == 'db_PlayCloud':" in router
+          assert 'resolve_cloud_torrent_file(' in router
+          assert 'resolve_cloud_usenet_file(' in router
+          assert "elif action == 'db_PlayDownload':" in router
+          assert 'action=db_PlayDownload&url=%s' in deep  # Download History remains unchanged.
+          print('stable-token manual cloud checks passed')
+          PY
+          git diff --check
+      - name: Remove one-off files
+        run: |
+          rm .github/scripts/patch_deepbrid_manual_cloud_stable.py
+          rm .github/workflows/deepbrid-manual-cloud-stable-playback.yml
+      - name: Commit patch
+        run: |
+          git config user.name "Suyash Saluja"
+          git config user.email "suyash691@live.in"
+          git add omega/plugin.video.umbrella/resources/lib/debrid/deepbrid.py omega/plugin.video.umbrella/resources/lib/modules/router.py .github/scripts .github/workflows
+          git diff --cached --check
+          git commit -m "Refresh Deepbrid manual cloud links on click"
+          git push origin HEAD:agent/deepbrid-manual-cloud-stable-playback
