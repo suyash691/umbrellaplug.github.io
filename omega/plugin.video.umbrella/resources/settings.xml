@@ -4652,10 +4652,10 @@
 					</control>
 				</setting>
 			</group>
-			<group id="7" label="Deepbrid">
+			<group id="7" label="40715">
 				<setting id="deepbrid.enable" type="boolean" label="32081" help="">
 					<level>0</level>
-					<default>false</default>
+					<default>true</default>
 					<dependencies>
 						<dependency type="visible">
 							<condition operator="!is" setting="deepbrid.token"/>

@@ -11,7 +11,6 @@ import requests
 
 from resources.lib.modules import control
 from resources.lib.modules import log_utils
-from resources.lib.modules import cache
 
 
 BASE_URL = 'https://www.deepbrid.com/api/v1/'
@@ -143,7 +142,7 @@ class Deepbrid:
 
         key = control.dialog.input(
             'Deepbrid API Key',
-            type=control.dialog.INPUT_ALPHANUM
+            type=control.alpha_input
         )
 
         if not key:
@@ -269,9 +268,7 @@ class Deepbrid:
             #   {"turbobit.net": "up"}
             # ]
 
-            result = cache.get(
-                self._get,
-                48,
+            result = self._get(
                 'hosts',
                 silent=True
             )
@@ -324,10 +321,7 @@ class Deepbrid:
             if not host:
                 return False
 
-            hosts = cache.get(
-                self.get_hosts,
-                48
-            )
+            hosts = self.get_hosts()
 
             if isinstance(hosts, dict):
                 host_list = hosts.get(

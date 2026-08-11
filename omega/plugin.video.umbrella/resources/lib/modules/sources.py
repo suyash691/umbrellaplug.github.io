@@ -1365,8 +1365,18 @@ class Sources:
 	def sourcesAutoPlay(self, items):
 		#control.hide()
 		#control.sleep(200)
-		items = [i for i in items if not (i.get('debrid') == 'Deepbrid' and i.get('source') == 'unchecked')]
-		if not items: return None
+		preferred_items = [
+			i for i in items
+			if not (
+				i.get('debrid') == 'Deepbrid'
+				and i.get('source') == 'unchecked'
+			)
+		]
+
+		if preferred_items:
+			items = preferred_items
+		if not items:
+			return None
 		if getSetting('autoplay.sd') == 'true': items = [i for i in items if not i['quality'] in ('4K', '1080p', '720p')]
 		header = homeWindow.getProperty(self.labelProperty) + ': Resolving...'
 		try:
